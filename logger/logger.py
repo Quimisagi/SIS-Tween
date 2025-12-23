@@ -1,7 +1,10 @@
 import logging
 from logging.handlers import RotatingFileHandler
+from pathlib import Path
 
 def setup_logger(name: str, log_file: str, level=logging.INFO):
+    logs_dir = Path("logger")
+    log_path = logs_dir / log_file
     logger = logging.getLogger(name)
     logger.setLevel(level)
 
@@ -15,7 +18,7 @@ def setup_logger(name: str, log_file: str, level=logging.INFO):
     console_handler = logging.StreamHandler()
     console_handler.setFormatter(formatter)
 
-    file_handler = RotatingFileHandler(log_file, maxBytes=5*1024*1024, backupCount=3)
+    file_handler = RotatingFileHandler(log_path, maxBytes=5*1024*1024, backupCount=3)
     file_handler.setFormatter(formatter)
 
     logger.addHandler(console_handler)
