@@ -63,8 +63,9 @@ class CrossFrameAttention(nn.Module):
         key = self.key_conv(frame2_features).view(batch_size, -1, height * width)
         value = self.value_conv(frame2_features).view(batch_size, -1, height * width)
         
-        attention = torch.bmm(query, key)
-        attention = F.softmax(attention, dim=2)
+        scale = query.size(-1) ** -0.5
+        attention = torch.bmm(query, key) * scale
+        attention = F.softmax(attention, dim=-1)
         
         attended = torch.bmm(value, attention.permute(0, 2, 1))  
         attended = attended.view(batch_size, channels, height, width)
@@ -96,14 +97,16 @@ class Interpolator(nn.Module):
         self.final_conv = nn.Conv2d(base_c, frame_c, kernel_size=1)
         self.tanh = nn.Tanh()
 
-    def forward(self, frame1, frame2):
-        f1_d1, f1_p1 = self.down1(frame1)
-        f1_d2, f1_p2 = self.down2(f1_p1)
-        f1_d3, f1_p3 = self.down3(f1_p2)
+    def encode(self, x):
+        d1, p1 = self.down1(x)
+        d2, p2 = self.down2(p1)
+        d3, p3 = self.down3(p2)
+        return (d1, d2, d3), p3
 
-        f2_d1, f2_p1 = self.down1(frame2)
-        f2_d2, f2_p2 = self.down2(f2_p1)
-        f2_d3, f2_p3 = self.down3(f2_p2)
+    def forward(self, frame1, frame2):
+
+        (f1_d1, f1_d2, f1_d3), f1_p3 = self.encode(frame1)
+        (f2_d1, f2_d2, f2_d3), f2_p3 = self.encode(frame2)
 
         f1_att = self.attention(f1_p3, f2_p3)
         f2_att = self.attention(f2_p3, f1_p3)
