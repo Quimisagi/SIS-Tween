@@ -1,4 +1,5 @@
 """
+Segmentator
 UNet-like segmentation network with MobileNetV2 encoder pretrained on ImageNet.
 Originally from: https://github.com/siyeong0/Anime-Face-Segmentation/blob/main/network.py
 """
