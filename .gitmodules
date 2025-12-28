@@ -1,0 +1,3 @@
+[submodule "DiffSynth"]
+	path = DiffSynth
+	url = https://github.com/Quimisagi/DiffSynth
