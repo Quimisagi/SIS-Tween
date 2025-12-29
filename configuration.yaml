@@ -1,8 +1,9 @@
 model_name: sis_tween
-training_logs_dir: runs/
+tensorboard_logs_dir: runs/
 save_progress: true
 save_interval: 10
-epochs: 50
 num_workers: 4
-gpu_num: 1
+batch_size: 16
+distributed_training_enabled: false
+world_size: 1
 image_size: 256
