@@ -8,15 +8,6 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data.distributed import DistributedSampler
 from torch.utils.data import Dataset, DataLoader
 
-from logger import logger
-
-logger = logger.setup_logger("debug", "debug.log")
-
-logger.info(f"Number of CUDA devices: {torch.cuda.device_count()}")
-# logger.info(f"CUDA available: {torch.cuda.is_available()}")
-# logger.info(f"CUDA device name: {torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'No GPU'}")
-
-
 def setup(rank, world_size):
     os.environ['MASTER_ADDR'] = 'localhost'
     os.environ['MASTER_PORT'] = '12355'

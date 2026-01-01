@@ -3,7 +3,7 @@ tensorboard_logs_dir: runs/
 save_progress: true
 save_interval: 10
 num_workers: 4
-batch_size: 16
+batch_size: 4
 distributed_training_enabled: false
 world_size: 1
 image_size: 256

@@ -1,3 +1,5 @@
+import sys
+
 """
 Interpolator
 U-Net style architecture for image interpolation
@@ -81,21 +83,21 @@ class Interpolator(nn.Module):
     For downsampling, each frame is processed separately, but for upsampling, skip connections from both frames 
     are concatenated.
     """
-    def __init__(self, frame_c, base_c):
+    def __init__(self, sem_c, base_c):
         super().__init__()
-        self.down1 = DownSampleBlock(frame_c, base_c)
+        sample_c = sem_c + 3 # semantic channels + RGB channels
+        self.down1 = DownSampleBlock(sample_c, base_c)
         self.down2 = DownSampleBlock(base_c, base_c * 2)
         self.down3 = DownSampleBlock(base_c * 2, base_c * 4)
 
         self.attention = CrossFrameAttention(base_c * 4)
 
-        self.bottleneck = ConvBlock(base_c * 4 * 2, base_c * 8) 
+        self.bottleneck = ConvBlock(base_c * 8, base_c * 16) 
 
-        self.up3 = UpSampleBlock(base_c * 16, base_c * 4)
-        self.up2 = UpSampleBlock(base_c * 8, base_c * 2)
-        self.up1 = UpSampleBlock(base_c * 4, base_c)
-        self.final_conv = nn.Conv2d(base_c, frame_c, kernel_size=1)
-        self.tanh = nn.Tanh()
+        self.up3 = UpSampleBlock(base_c * 16, base_c * 8)
+        self.up2 = UpSampleBlock(base_c * 8, base_c * 4)
+        self.up1 = UpSampleBlock(base_c * 4, base_c * 2)
+        self.final_conv = nn.Conv2d(base_c * 2, sem_c, kernel_size=1)
 
     def encode(self, x):
         d1, p1 = self.down1(x)
@@ -114,6 +116,7 @@ class Interpolator(nn.Module):
         bottleneck_input = torch.cat([f1_att, f2_att], dim=1)
         bottleneck = self.bottleneck(bottleneck_input)
 
+
         skip3 = torch.cat([f1_d3, f2_d3], dim=1) 
         up3 = self.up3(bottleneck, skip3)
 
@@ -124,7 +127,6 @@ class Interpolator(nn.Module):
         up1 = self.up1(up2, skip1)
 
         out = self.final_conv(up1)
-        out = self.tanh(out)
 
         return out
 
