@@ -1,0 +1,15 @@
+from dataclasses import dataclass
+
+@dataclass
+class TrainConfig:
+    model_name: str = "sis_tween"
+    world_size: int = 1
+    distributed_enabled: bool = False
+    image_size: int = 256
+    batch_size: int = 4
+    num_workers: int = 4
+    tensorboard_logs_dir: str = "/runs"
+    save_progress: bool = True
+    save_interval: int = 5
+
+

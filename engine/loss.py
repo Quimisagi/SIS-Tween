@@ -1,3 +1,4 @@
+import torch.nn as nn
 import torch.nn.functional as F
 
 def multiclass_dice_loss(logits, target, eps=1e-6):
@@ -9,10 +10,6 @@ def multiclass_dice_loss(logits, target, eps=1e-6):
 
     probs = F.softmax(logits, dim=1)
 
-    # # target → one-hot
-    # target = F.one_hot(target, num_classes=num_classes)  # (B, H, W, C)
-    # target = target.permute(0, 3, 1, 2).float()           # (B, C, H, W)
-
     # flatten spatial dims
     probs = probs.reshape(probs.size(0), num_classes, -1)
     target = target.reshape(target.size(0), num_classes, -1)
@@ -23,3 +20,13 @@ def multiclass_dice_loss(logits, target, eps=1e-6):
     dice_per_class = (2 * intersection + eps) / (union + eps)
 
     return 1 - dice_per_class.mean()
+
+class Loss:
+    def __init__(self):
+        self.ce = nn.CrossEntropyLoss()
+
+    def ce(self, p, t):
+        return self.ce(p, t)
+
+    def dice(self, p, t):
+        return multiclass_dice_loss(p, t)

@@ -99,7 +99,7 @@ class Interpolator(nn.Module):
         self.up1 = UpSampleBlock(base_c * 4, base_c * 2)
         self.final_conv = nn.Conv2d(base_c * 2, sem_c, kernel_size=1)
 
-    def encode(self, x):
+    def _encode(self, x):
         d1, p1 = self.down1(x)
         d2, p2 = self.down2(p1)
         d3, p3 = self.down3(p2)
@@ -107,8 +107,8 @@ class Interpolator(nn.Module):
 
     def forward(self, frame1, frame2):
 
-        (f1_d1, f1_d2, f1_d3), f1_p3 = self.encode(frame1)
-        (f2_d1, f2_d2, f2_d3), f2_p3 = self.encode(frame2)
+        (f1_d1, f1_d2, f1_d3), f1_p3 = self._encode(frame1)
+        (f2_d1, f2_d2, f2_d3), f2_p3 = self._encode(frame2)
 
         f1_att = self.attention(f1_p3, f2_p3)
         f2_att = self.attention(f2_p3, f1_p3)
