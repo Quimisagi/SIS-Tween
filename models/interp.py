@@ -1,5 +1,3 @@
-import sys
-
 """
 Interpolator
 U-Net style architecture for image interpolation
@@ -129,4 +127,3 @@ class Interpolator(nn.Module):
         out = self.final_conv(up1)
 
         return out
-

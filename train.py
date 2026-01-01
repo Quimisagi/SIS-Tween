@@ -1,11 +1,10 @@
 import yaml
+import argparse
 import torch.nn as nn
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard.writer import SummaryWriter
 
 from data.triplet_dataset import TripletDataset
-import argparse
-
 from utils.distributed_gpu import prepare, run_parallel, setup, cleanup
 from utils.train_config import TrainConfig
 import engine.setup as setup
