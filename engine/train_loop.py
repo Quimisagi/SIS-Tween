@@ -58,14 +58,18 @@ def _train_interpolator(interp, loss, optimizers, images, labels, device, weight
     optimizers['interp'].step()
 
 
-def train_loop(seg, interp, loss, optimizers, dataloader, device, writer, weights, epochs=50):
+def train_loop(seg, interp, loss, optimizers, dataloader, device, writer, logger, weights, epochs=50):
     seg.train()
     interp.train()
 
     for epoch in range(epochs):
+        logger.info(f"[Epoch:{epoch + 1}/{epochs}]")
         for data in dataloader:
             images = data['images']
             labels = data['labels']
+            if epoch == 0:
+                logger.debug(f"Images length: {len(images)}")
+                logger.debug(f"Labels length: {len(labels)}")
 
             _train_segmentator(seg, loss, optimizers, images, labels, device, weights)
             _train_interpolator(interp, loss, optimizers, images, labels, device, weights)

@@ -11,24 +11,30 @@ from utils.train_config import TrainConfig
 import engine.setup as setup
 from engine import train_loop, Loss
 from models import Interpolator, Segmentator
+from logs.logger import setup_logger
 
 def main():
+    logger = setup_logger('train', 'training.log')
     # ---- Argument parser ----
     parser = argparse.ArgumentParser(description='Train GANiMate')
     parser.add_argument('--config', type=str, default='configuration.yaml')
     parser.add_argument('--dataset_path', required=True)
     args = parser.parse_args()
 
+    logger.info("Seting up training...")
+
     # ---- Load config ----
     with open(args.config) as f:
         config = yaml.safe_load(f)
 
     cfg = TrainConfig(**config)
+    logger.debug(f"Configuration: {cfg}")
 
     # ---- Device / distributed ----
     device, local_rank = setup.prepare_device(cfg.distributed_enabled, cfg.world_size)
+    logger.debug(f"Using device: {device}")
 
-    # ---- Logging ----
+    # ---- Tensorboard Logging ----
     writer = SummaryWriter(log_dir=cfg.tensorboard_logs_dir) if (
         not cfg.distributed_enabled or local_rank == 0
     ) else None
@@ -44,6 +50,8 @@ def main():
         label_transform=label_transform,
         apply_augmentation=False
     )
+    logger.info("Dataset and DataLoader prepared.")
+    logger.debug(f"Dataset size: {len(dataset)}")
 
     if cfg.distributed_enabled and cfg.world_size > 1:
         dataloader = prepare(
@@ -81,8 +89,8 @@ def main():
     weights = setup.create_weights()
 
     # ---- Train ----
-    print("Starting training...")
-    train_loop(seg, interp, loss, optimizers, dataloader, device, writer, weights)
+    logger.info("Starting training...")
+    train_loop(seg, interp, loss, optimizers, dataloader, device, writer, logger, weights)
 
 if __name__ == "__main__":
     main()
