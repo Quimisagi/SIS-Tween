@@ -12,7 +12,7 @@ from torchvision.models import MobileNet_V2_Weights
 class Segmentator(nn.Module):
     def __init__(self):
         super(Segmentator, self).__init__()
-        self.NUM_SEG_CLASSES = 7 # Background, hair, face, eye, mouth, skin, clothes
+        self.NUM_SEG_CLASSES = 6 # Background, hair, face, eye, mouth, skin, clothes
         
         mobilenet_v2 = torchvision.models.mobilenet_v2(weights=MobileNet_V2_Weights.IMAGENET1K_V1)
         mob_blocks = mobilenet_v2.features

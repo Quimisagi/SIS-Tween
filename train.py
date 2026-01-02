@@ -7,15 +7,17 @@ from torch.utils.tensorboard.writer import SummaryWriter
 from data.triplet_dataset import TripletDataset
 from utils.distributed_gpu import prepare, run_parallel, setup, cleanup
 from utils.train_config import TrainConfig
+from utils.visualization import setup_tensorboard, samples_comparison
 import engine.setup as setup
 from engine import train_loop, Loss
 from models import Interpolator, Segmentator
 from logs.logger import setup_logger
 
+
 def main():
     logger = setup_logger('train', 'training.log')
     # ---- Argument parser ----
-    parser = argparse.ArgumentParser(description='Train GANiMate')
+    parser = argparse.ArgumentParser(description='Train SIS_Tween')
     parser.add_argument('--config', type=str, default='configuration.yaml')
     parser.add_argument('--dataset_path', required=True)
     args = parser.parse_args()
@@ -32,11 +34,6 @@ def main():
     # ---- Device / distributed ----
     device, local_rank = setup.prepare_device(cfg.distributed_enabled, cfg.world_size)
     logger.debug(f"Using device: {device}")
-
-    # ---- Tensorboard Logging ----
-    writer = SummaryWriter(log_dir=cfg.tensorboard_logs_dir) if (
-        not cfg.distributed_enabled or local_rank == 0
-    ) else None
 
     # ---- Transforms ----
     image_transform, label_transform = setup.create_transforms(cfg.image_size)
@@ -69,7 +66,7 @@ def main():
         )
 
     # ---- Models ----
-    interp = Interpolator(sem_c=7, base_c=64).to(device)
+    interp = Interpolator(sem_c=6, base_c=64).to(device)
     seg = Segmentator().to(device)
 
     if cfg.distributed_enabled and cfg.world_size > 1:
@@ -87,10 +84,12 @@ def main():
 
     weights = setup.create_weights()
 
+    # ---- TensorBoard ----
+    writer = setup_tensorboard(cfg, local_rank)
+
     # ---- Train ----
     logger.info("Starting training...")
     train_loop(seg, interp, loss, optimizers, dataloader, device, writer, logger, weights)
 
 if __name__ == "__main__":
     main()
-

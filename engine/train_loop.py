@@ -1,21 +1,23 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from utils.visualization import samples_comparison
 
-def _prepare_label(label, device, num_classes=7):
+def _prepare_label(label, device, num_classes=6):
     label = label.to(device)
     return F.one_hot(
         label.squeeze(1).long(),
         num_classes=num_classes
     ).permute(0, 3, 1, 2).float()
 
-def _prepare_interp_input(label, image, device, num_classes=7):
+def _prepare_interp_input(label, image, device, num_classes=6):
     label = _prepare_label(label, device, num_classes)
     image = image.to(device)
     return torch.cat([image, label], dim=1)
 
 
 def _train_segmentator(seg, loss, optimizers, images, labels, device, weights):
+    generated = []
     for i in range(3):
         seg_img = images[i].to(device)
         seg_label = _prepare_label(labels[i], device)
@@ -35,6 +37,9 @@ def _train_segmentator(seg, loss, optimizers, images, labels, device, weights):
 
         loss_seg.backward()
         optimizers['seg'].step()
+
+        generated.append(seg_output.detach())
+    return generated
 
 
 def _train_interpolator(interp, loss, optimizers, images, labels, device, weights):
@@ -64,14 +69,14 @@ def _train_interpolator(interp, loss, optimizers, images, labels, device, weight
     loss_interp.backward()
     optimizers['interp'].step()
 
+    return generated
 
 def train_loop(seg, interp, loss, optimizers, dataloader, device, writer, logger, weights, epochs=50):
     seg.train()
     interp.train()
-
     for epoch in range(epochs):
         logger.info(f"[Epoch:{epoch + 1}/{epochs}]")
-        for data in dataloader:
+        for i, data in enumerate(dataloader):
             images = data['images']
             labels = data['labels']
             if epoch == 0:
@@ -79,6 +84,18 @@ def train_loop(seg, interp, loss, optimizers, dataloader, device, writer, logger
                 assert len(images) == 3
                 assert len(labels) == 3
 
-            _train_segmentator(seg, loss, optimizers, images, labels, device, weights)
-            _train_interpolator(interp, loss, optimizers, images, labels, device, weights)
+            seg_output = _train_segmentator(seg, loss, optimizers, images, labels, device, weights)
+            interp_output = _train_interpolator(interp, loss, optimizers, images, labels, device, weights)
+
+            if writer is not None and i % 100 == 0:
+                samples_comparison(
+                    writer,
+                    logger,
+                    gt_images=images,
+                    gt_labels=labels,
+                    seg_labels=seg_output,
+                    interp_label=interp_output,
+                    epoch=epoch,
+                    tag="train_samples"
+                )
 
