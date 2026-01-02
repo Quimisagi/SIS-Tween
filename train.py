@@ -7,7 +7,7 @@ from torch.utils.tensorboard.writer import SummaryWriter
 from data.triplet_dataset import TripletDataset
 from utils.distributed_gpu import prepare, run_parallel, setup, cleanup
 from utils.train_config import TrainConfig
-from utils.visualization import setup_tensorboard, samples_comparison
+from utils.visualization import setup_tensorboard 
 import engine.setup as setup
 from engine import train_loop, Loss
 from models import Interpolator, Segmentator

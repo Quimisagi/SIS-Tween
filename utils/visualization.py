@@ -91,15 +91,29 @@ def samples_comparison(writer, logger, gt_images, gt_labels, seg_labels, interp_
             "SEG_0",    "SEG_1",    "SEG_2",
             "",         "INTERP",   ""
         ]
-
-        # Log each image individually
-        for i, (img, txt) in enumerate(zip(all_images, text_labels)):
+        labeled_images = []
+        for img, txt in zip(all_images, text_labels):
             if txt != "":
-                img_labeled = _add_label_to_tensor(img, txt)
+                labeled_images.append(_add_label_to_tensor(img, txt))
             else:
-                img_labeled = img
+                labeled_images.append(img)
 
-            writer.add_image(f"{tag}/{txt or f'img_{i}'}", img_labeled, epoch)
+        grid = make_grid(labeled_images, nrow=3, padding=4)
+        writer.add_image(tag, grid, epoch)
+
+        for i, (img, txt) in enumerate(zip(all_images, text_labels)):
+            img_labeled = _add_label_to_tensor(img, txt) if txt != "" else img
+            writer.add_image(f"{tag}/individual/{txt or f'img_{i}'}", img_labeled, epoch)
 
     except Exception as e:
         logger.error(f"Visualization failed: {e}")
+
+def plot_losses(writer, logger, loss_dict, epoch):
+    if writer is None:
+        return
+
+    try:
+        for loss_name, loss_value in loss_dict.items():
+            writer.add_scalar(f"Loss/{loss_name}", loss_value, epoch)
+    except Exception as e:
+        logger.error(f"Logging losses failed: {e}")

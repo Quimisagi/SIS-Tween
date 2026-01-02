@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from utils.visualization import samples_comparison
+from utils.visualization import samples_comparison, plot_losses
 
 def _prepare_label(label, device, num_classes=6):
     label = label.to(device)
@@ -16,7 +16,7 @@ def _prepare_interp_input(label, image, device, num_classes=6):
     return torch.cat([image, label], dim=1)
 
 
-def _train_segmentator(seg, loss, optimizers, images, labels, device, weights):
+def _train_segmentator(seg, loss, optimizers, images, labels, device, weights, is_validation=False):
     generated = []
     for i in range(3):
         seg_img = images[i].to(device)
@@ -39,10 +39,10 @@ def _train_segmentator(seg, loss, optimizers, images, labels, device, weights):
         optimizers['seg'].step()
 
         generated.append(seg_output.detach())
-    return generated
+    return generated, loss_seg
 
 
-def _train_interpolator(interp, loss, optimizers, images, labels, device, weights):
+def _train_interpolator(interp, loss, optimizers, images, labels, device, weights, is_validation=False):
     optimizers['interp'].zero_grad()
 
     input_a = _prepare_interp_input(labels[0], images[0], device)
@@ -69,7 +69,7 @@ def _train_interpolator(interp, loss, optimizers, images, labels, device, weight
     loss_interp.backward()
     optimizers['interp'].step()
 
-    return generated
+    return generated, loss_interp
 
 def train_loop(seg, interp, loss, optimizers, dataloader, device, writer, logger, weights, epochs=50):
     seg.train()
@@ -84,10 +84,20 @@ def train_loop(seg, interp, loss, optimizers, dataloader, device, writer, logger
                 assert len(images) == 3
                 assert len(labels) == 3
 
-            seg_output = _train_segmentator(seg, loss, optimizers, images, labels, device, weights)
-            interp_output = _train_interpolator(interp, loss, optimizers, images, labels, device, weights)
+            seg_output, loss_seg= _train_segmentator(seg, loss, optimizers, images, labels, device, weights)
+            interp_output, loss_interp = _train_interpolator(interp, loss, optimizers, images, labels, device, weights)
 
             if writer is not None and i % 100 == 0:
+                logger.info(f"[Step:{i}]: Seg_Loss={loss_seg.item():.4f}, Interp_Loss={loss_interp.item():.4f}")
+                plot_losses(
+                    writer,
+                    logger,
+                    {
+                        'Segmentation': loss_seg.item(),
+                        'Interpolation': loss_interp.item()
+                    },
+                    epoch * len(dataloader) + i
+                )
                 samples_comparison(
                     writer,
                     logger,
