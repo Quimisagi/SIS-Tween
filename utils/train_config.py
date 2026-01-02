@@ -11,5 +11,6 @@ class TrainConfig:
     tensorboard_logs_dir: str = "/runs"
     save_progress: bool = True
     save_interval: int = 5
+    segmentator_score_threshold : float = 0.1
 
 

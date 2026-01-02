@@ -7,3 +7,4 @@ batch_size: 8
 distributed_enabled: false
 world_size: 1
 image_size: 256
+segmentator_score_threshold: 0.1

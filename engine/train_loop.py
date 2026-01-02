@@ -118,7 +118,8 @@ def validate(seg, interp, loss, dataloader, device, writer=None, epoch=0, logger
 
     return avg_loss_seg, avg_loss_interp, avg_dice_seg
 
-def train_loop(seg, interp, loss, optimizers, dataloader, device, writer, logger, weights, epochs=50):
+def train_loop(seg, interp, loss, optimizers, dataloader, device, writer, logger, weights, epochs=50, segmentator_score_threshold=0.1):
+    #TODO: Too many arguments, refactor
     for epoch in range(epochs):
         seg.train()
         interp.train()
@@ -139,6 +140,8 @@ def train_loop(seg, interp, loss, optimizers, dataloader, device, writer, logger
                 samples_comparison(writer, logger, images, labels, seg_output, interp_output, epoch, tag="train_samples")
 
         val_loss_seg, val_loss_interp, dice_score_seg = validate(seg, interp, loss, dataloader, device, writer, epoch, logger)
-        logger.info(f"[Epoch:{epoch + 1}/{epochs}] Validation Seg_Loss={val_loss_seg:.4f}, Interp_Loss={val_loss_interp:.4f}")
-        logger.info(f"[Epoch:{epoch + 1}/{epochs}] Segmentation Dice Score={dice_score_seg:.4f}")
+        logger.info(f"[Epoch:{epoch + 1}/{epochs}] Validation Seg_Loss={val_loss_seg:.4f}, Interp_Loss={val_loss_interp:.4f}, Dice_Score={dice_score_seg:.4f}")
+
+        if dice_score_seg > segmentator_score_threshold:
+            logger.info(f"Dice score {dice_score_seg:.4f} exceeded threshold {segmentator_score_threshold:.4f}.")
 
