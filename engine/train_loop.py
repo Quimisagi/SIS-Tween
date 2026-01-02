@@ -124,9 +124,6 @@ def train_loop(seg, interp, loss, optimizers, dataloader, device, writer, logger
         seg.train()
         interp.train()
 
-        val_loss_seg, val_loss_interp, dice_score_seg = validate(seg, interp, loss, dataloader, device, writer, epoch, logger)
-
-
         for i, data in enumerate(dataloader):
             images = data['images']
             labels = data['labels']

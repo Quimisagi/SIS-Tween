@@ -46,7 +46,7 @@ def main():
         label_transform=label_transform,
         apply_augmentation=False
     )
-    logger.info("Dataset and DataLoader prepared.")
+    logger.info("Dataset and DataLoader ready")
     logger.debug(f"Dataset size: {len(dataset)}")
 
     if cfg.distributed_enabled and cfg.world_size > 1:
@@ -89,7 +89,23 @@ def main():
 
     # ---- Train ----
     logger.info("Starting training...")
-    train_loop(seg, interp, loss, optimizers, dataloader, device, writer, logger, weights)
+    def train_fn():
+        train_loop(
+            seg,
+            interp,
+            loss,
+            optimizers,
+            dataloader,
+            device,
+            writer,
+            logger,
+            weights
+        )
+
+    if cfg.distributed_enabled and cfg.world_size > 1:
+        run_parallel(train_fn, cfg.world_size)
+    else:
+        train_fn()
 
 if __name__ == "__main__":
     main()
