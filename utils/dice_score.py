@@ -15,6 +15,9 @@ def dice_score_multiclass(preds, labels, num_classes=None, eps=1e-6):
     preds: (B, C, H, W) logits from the model
     labels: (B, H, W) integer class labels
     """
+
+    assert preds.dim() == 4, f"Expected preds to have 4 dimensions (B, C, H, W), got {preds.dim()}"
+    assert labels.dim() == 3, f"Expected labels to have 3 dimensions (B, H, W), got {labels.dim()}"
     if num_classes is None:
         num_classes = preds.shape[1]
 

@@ -97,15 +97,18 @@ def validate(seg, interp, loss, dataloader, device, writer=None, epoch=0, logger
             total_loss_seg += loss_seg
             total_loss_interp += loss_interp
 
-            dice = dice_score_multiclass(seg_output, labels)
-            total_dice_seg += dice
+            for i in range(len(seg_output)):
+                seg_output[i] = seg_output[i].detach()
+                labels[i] = labels[i].to(device).squeeze(1).long()
+                dice = dice_score_multiclass(seg_output[i], labels[i])
+                total_dice_seg += dice
 
             if writer is not None and i % 50 == 0:
                 samples_comparison(writer, logger, images, labels, seg_output, interp_output, epoch, tag="val_samples")
 
     avg_loss_seg = total_loss_seg / n_batches
     avg_loss_interp = total_loss_interp / n_batches
-    avg_dice_seg = total_dice_seg / n_batches
+    avg_dice_seg = total_dice_seg / n_batches / 3
 
     if logger:
         logger.info(f"[Validation] Seg_Loss={avg_loss_seg:.4f}, Interp_Loss={avg_loss_interp:.4f}")
@@ -119,6 +122,9 @@ def train_loop(seg, interp, loss, optimizers, dataloader, device, writer, logger
     for epoch in range(epochs):
         seg.train()
         interp.train()
+
+        val_loss_seg, val_loss_interp, dice_score_seg = validate(seg, interp, loss, dataloader, device, writer, epoch, logger)
+
 
         for i, data in enumerate(dataloader):
             images = data['images']
