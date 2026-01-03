@@ -8,7 +8,7 @@ import torchvision.transforms.functional as TF
 from . import seg_to_rgb
 
 
-def setup_tensorboard(cfg, local_rank):
+def init_tensorboard(cfg, local_rank):
     writer = SummaryWriter(log_dir=cfg.tensorboard_logs_dir) if (
             not cfg.distributed_enabled or local_rank == 0
         ) else None

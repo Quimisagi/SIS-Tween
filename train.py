@@ -3,24 +3,28 @@ import argparse
 import torch.nn as nn
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard.writer import SummaryWriter
+from pathlib import Path
 
 from data.triplet_dataset import TripletDataset
-from utils.distributed_gpu import prepare, run_parallel, setup, cleanup
-from utils.train_config import TrainConfig
-from utils.visualization import setup_tensorboard 
+from utils import distributed_gpu, visualization, TrainConfig
 import engine.setup as setup
 from engine import train_loop, Loss
 from models import Interpolator, Segmentator
-from logs.logger import setup_logger
+from logs.logger import init_logger
 
 
 def main():
-    logger = setup_logger('train', 'training.log')
+    logger = init_logger('train', 'training.log')
     # ---- Argument parser ----
     parser = argparse.ArgumentParser(description='Train SIS_Tween')
     parser.add_argument('--config', type=str, default='configuration.yaml')
     parser.add_argument('--dataset_path', required=True)
     args = parser.parse_args()
+
+    path = Path(args.dataset_path)
+    assert path.exists(), f"Path does not exist: {path}"
+    config_path = Path(args.config)
+    assert config_path.exists(), f"Config file does not exist: {config_path}"
 
     logger.info("Seting up training...")
 
@@ -32,6 +36,9 @@ def main():
     logger.debug(f"Configuration: {cfg}")
 
     # ---- Device / distributed ----
+    if(cfg.distributed_enabled and cfg.world_size > 1):
+        distributed_gpu.setup(0, cfg.world_size)
+
     device, local_rank = setup.prepare_device(cfg.distributed_enabled, cfg.world_size)
     logger.debug(f"Using device: {device}")
 
@@ -50,7 +57,7 @@ def main():
     logger.debug(f"Dataset size: {len(dataset)}")
 
     if cfg.distributed_enabled and cfg.world_size > 1:
-        dataloader = prepare(
+        dataloader = distributed_gpu.prepare(
             dataset,
             local_rank,
             cfg.world_size,
@@ -85,7 +92,7 @@ def main():
     weights = setup.create_weights()
 
     # ---- TensorBoard ----
-    writer = setup_tensorboard(cfg, local_rank)
+    writer = visualization.init_tensorboard(cfg, local_rank)
 
     # ---- Train ----
     logger.info("Starting training...")
@@ -103,7 +110,7 @@ def main():
         )
 
     if cfg.distributed_enabled and cfg.world_size > 1:
-        run_parallel(train_fn, cfg.world_size)
+        distributed_gpu.run_parallel(train_fn, cfg.world_size)
     else:
         train_fn()
 
