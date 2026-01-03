@@ -12,6 +12,7 @@ from engine import train_loop, Loss
 from models import Interpolator, Segmentator
 from logs.logger import init_logger
 
+import torch.distributed as dist
 
 def main():
     logger = init_logger('train', 'training.log')
@@ -36,6 +37,8 @@ def main():
     logger.debug(f"Configuration: {cfg}")
 
     # ---- Device / distributed ----
+
+    dist.init_process_group(backend="nccl")
 
     device, local_rank = setup.prepare_device(cfg.distributed_enabled, cfg.world_size)
     logger.debug(f"Using device: {device}")
