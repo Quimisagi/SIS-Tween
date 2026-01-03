@@ -36,8 +36,6 @@ def main():
     logger.debug(f"Configuration: {cfg}")
 
     # ---- Device / distributed ----
-    if(cfg.distributed_enabled and cfg.world_size > 1):
-        distributed_gpu.setup(0, cfg.world_size)
 
     device, local_rank = setup.prepare_device(cfg.distributed_enabled, cfg.world_size)
     logger.debug(f"Using device: {device}")
