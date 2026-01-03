@@ -8,7 +8,7 @@ from pathlib import Path
 from data.triplet_dataset import TripletDataset
 from utils import distributed_gpu, visualization, TrainConfig
 import engine.setup as setup
-from engine import train_loop, Loss
+from engine import train_loop, Loss, ModelsBundle, ContextBundle, DataloaderBundle
 from models import Interpolator, Segmentator
 from logs.logger import init_logger
 
@@ -32,7 +32,7 @@ def train_fn(cfg, args):
 
     # ---- Dataset / Loader ----
     logger.info("Preparing Dataset")
-    dataset = TripletDataset(
+    dataset_train = TripletDataset(
         args.dataset_path,
         "train",
         image_transform=image_transform,
@@ -40,15 +40,30 @@ def train_fn(cfg, args):
         apply_augmentation=False,
     )
 
-    dataloader = distributed_gpu.prepare(
-        dataset,
+    dataloader_train = distributed_gpu.prepare(
+        dataset_train,
         local_rank,
         cfg.world_size,
         cfg.batch_size,
         num_workers=cfg.num_workers,
     )
-    logger.info("Dataset and DataLoader ready")
-    logger.debug(f"Dataset size: {len(dataset)}")
+    logger.info("Training Dataset and DataLoader ready")
+    logger.debug(f"Training Dataset size: {len(dataset_train)}")
+
+    dataset_val = TripletDataset(
+        args.dataset_path,
+        "val",
+        image_transform=image_transform,
+        label_transform=label_transform,
+        apply_augmentation=False,
+    )
+    dataloader_val = distributed_gpu.prepare(
+        dataset_val,
+        local_rank,
+        cfg.world_size,
+        cfg.batch_size,
+        num_workers=cfg.num_workers,
+    )
 
     # ---- Models ----
     interp = Interpolator(sem_c=6, base_c=64).to(device)
@@ -74,16 +89,25 @@ def train_fn(cfg, args):
 
     # ---- Train ----
     logger.info("Starting training...")
+    models_bundle = ModelsBundle(seg=seg, interp=interp)
+    context_bundle = ContextBundle(
+        device=device,
+        epochs=cfg.epochs,
+        writer=writer,
+        logger=logger,
+        segmentator_score_threshold=cfg.segmentator_score_threshold,
+    )
+    dataloader_bundle = DataloaderBundle(
+        train=dataloader_train,
+        val=dataloader_val,
+    )
     train_loop(
-        seg,
-        interp,
         loss,
         optimizers,
-        dataloader,
-        device,
-        writer,
-        logger,
         weights,
+        models_bundle,
+        context_bundle,
+        dataloader_bundle,
     )
 
     dist.destroy_process_group()
