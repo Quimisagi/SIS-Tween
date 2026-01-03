@@ -44,6 +44,6 @@ def validate(loss, optimizers, dataloader, weights, epoch, models : ModelsBundle
         context.logger.info(f"[Validation] Seg_Loss={avg_loss_seg:.4f}, Interp_Loss={avg_loss_interp:.4f}")
 
     if context.writer:
-        plot_losses(context.writer, context.logger, {'Segmentation': avg_loss_seg, 'Interpolation': avg_loss_interp}, epoch * n_batches)
+        plot_losses(context.writer, context.logger, {'Segmentation': avg_loss_seg, 'Interpolation': avg_loss_interp}, epoch * n_batches, tag="val_losses")
 
     return avg_loss_seg, avg_loss_interp, avg_dice_seg

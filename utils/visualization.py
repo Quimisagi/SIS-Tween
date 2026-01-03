@@ -108,12 +108,12 @@ def samples_comparison(writer, logger, gt_images, gt_labels, seg_labels, interp_
     except Exception as e:
         logger.error(f"Visualization failed: {e}")
 
-def plot_losses(writer, logger, loss_dict, epoch):
+def plot_losses(writer, logger, loss_dict, epoch, tag="losses"):
     if writer is None:
         return
 
     try:
         for loss_name, loss_value in loss_dict.items():
-            writer.add_scalar(f"Loss/{loss_name}", loss_value, epoch)
+            writer.add_scalar(f"{tag}/{loss_name}", loss_value, epoch)
     except Exception as e:
         logger.error(f"Logging losses failed: {e}")
