@@ -14,6 +14,19 @@ from logs.logger import init_logger
 
 import torch.distributed as dist
 
+def train_fn(rank, world_size):
+    train_loop(
+        seg,
+        interp,
+        loss,
+        optimizers,
+        dataloader,
+        device,
+        writer,
+        logger,
+        weights
+    )
+
 def main():
     logger = init_logger('train', 'training.log')
     # ---- Argument parser ----
@@ -97,18 +110,6 @@ def main():
 
     # ---- Train ----
     logger.info("Starting training...")
-    def train_fn():
-        train_loop(
-            seg,
-            interp,
-            loss,
-            optimizers,
-            dataloader,
-            device,
-            writer,
-            logger,
-            weights
-        )
 
     if cfg.distributed_enabled and cfg.world_size > 1:
         distributed_gpu.run_parallel(train_fn, cfg.world_size)
