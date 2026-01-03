@@ -4,7 +4,7 @@ from dataclasses import dataclass
 class TrainConfig:
     model_name: str = "sis_tween"
     world_size: int = 1
-    distributed_enabled: bool = False
+    distributed_enabled: bool = True
     image_size: int = 256
     batch_size: int = 4
     num_workers: int = 4

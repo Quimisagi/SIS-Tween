@@ -1,8 +1,9 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from utils.visualization import samples_comparison, plot_losses
+from torch.utils.data import DistributedSampler
 from utils.dice_score import dice_score_multiclass
+from utils.visualization import samples_comparison, plot_losses
 
 def _prepare_label(label, device, num_classes=6):
     label = label.to(device)
@@ -121,6 +122,9 @@ def validate(seg, interp, loss, dataloader, device, writer=None, epoch=0, logger
 def train_loop(seg, interp, loss, optimizers, dataloader, device, writer, logger, weights, epochs=50, segmentator_score_threshold=0.1):
     #TODO: Too many arguments, refactor
     for epoch in range(epochs):
+        if isinstance(dataloader.sampler, DistributedSampler):
+            dataloader.sampler.set_epoch(epoch)
+
         seg.train()
         interp.train()
 
