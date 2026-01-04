@@ -4,7 +4,7 @@ import torch.nn.functional as F
 from torch.utils.data import DistributedSampler
 from utils.dice_score import dice_score_multiclass
 from utils.visualization import samples_comparison, plot_losses
-from .bundles import ContextBundle, ModelsBundle, Batch, DataloaderBundle
+from .bundles import RuntimeContext,Batch, DataloaderBundle, TrainingState
 from .training_steps import run_segmentator, run_interpolator
 from .validation import validate
 from collections import deque
@@ -28,16 +28,13 @@ def relative_improvement_window(
     return (old - new) / max(abs(old), eps)
 
 def warmup_train(
-    loss,
-    optimizers,
-    weights,
-    models: ModelsBundle,
-    context: ContextBundle,
+    training_state: TrainingState,
+    context: RuntimeContext,
     dataloaders: DataloaderBundle,
     epoch: int,
 ):
-    models.seg.train()
-    models.interp.train()
+    training_state.seg.train()
+    training_state.interp.train()
 
     for i, data in enumerate(dataloaders.train):
         images = data["images"]
@@ -46,26 +43,26 @@ def warmup_train(
         batch = Batch(images=images, labels=labels)
 
         seg_output, loss_seg = run_segmentator(
-            models.seg,
-            loss,
+            training_state.seg,
+            training_state.loss,
             batch,
             context.device,
-            optimizers["seg"],
-            weights["seg"],
+            training_state.optimizers["seg"],
+            training_state.weights["seg"],
         )
 
         interp_output, loss_interp = run_interpolator(
-            models.interp,
-            loss,
+            training_state.interp,
+            training_state.loss,
             batch,
             context.device,
-            optimizers["interp"],
-            weights["interp"],
+            training_state.optimizers["interp"],
+            training_state.weights["interp"],
         )
 
         if context.writer and i % 100 == 0:
             context.logger.info(
-                f"[Epoch:{epoch + 1}/{context.epochs}][Stage1][Step:{i}]: Seg_Loss={loss_seg:.4f}, Interp_Loss={loss_interp:.4f}"
+                f"[Stage1][Epoch:{epoch + 1}/{context.epochs}][Step:{i}]: Seg_Loss={loss_seg:.4f}, Interp_Loss={loss_interp:.4f}"
             )
 
             plot_losses(
@@ -90,19 +87,16 @@ def warmup_train(
             )
 
 def frozen_seg_train(
-    loss,
-    optimizers,
-    weights,
-    models: ModelsBundle,
-    context: ContextBundle,
+    training_state: TrainingState,
+    context: RuntimeContext,
     dataloaders: DataloaderBundle,
     epoch: int,
 ):
-    models.seg.eval()
-    for p in models.seg.parameters():
+    training_state.seg.eval()
+    for p in training_state.seg.parameters():
         p.requires_grad = False
 
-    models.interp.train()
+    training_state.interp.train()
 
     for i, data in enumerate(dataloaders.train):
         images = data["images"]
@@ -112,28 +106,28 @@ def frozen_seg_train(
 
         with torch.no_grad():
             seg_output, _ = run_segmentator(
-                models.seg,
-                loss,
+                training_state.seg,
+                training_state.loss,
                 batch,
                 context.device,
-                optimizers["seg"],
-                weights["seg"],
+                training_state.optimizers["seg"],
+                training_state.weights["seg"],
                 training=False,
             )
 
         batch.labels = [seg.detach().argmax(dim=1) for seg in seg_output]
         interp_output, loss_interp = run_interpolator(
-            models.interp,
-            loss,
+            training_state.interp,
+            training_state.loss,
             batch,
             context.device,
-            optimizers["interp"],
-            weights["interp"],
+            training_state.optimizers["interp"],
+            training_state.weights["interp"],
         )
 
         if context.writer and i % 100 == 0:
             context.logger.info(
-                f"[Epoch:{epoch + 1}/{context.epochs}][Stage2][Step:{i}] Interp_Loss={loss_interp:.4f}"
+                f"[Stage2][Epoch:{epoch + 1}/{context.epochs}][Step:{i}] Interp_Loss={loss_interp:.4f}"
             )
 
             plot_losses(
@@ -155,16 +149,13 @@ def frozen_seg_train(
             )
 
 def joint_finetune_train(
-    loss,
-    optimizers,
-    weights,
-    models: ModelsBundle,
-    context: ContextBundle,
+    training_state: TrainingState,
+    context: RuntimeContext,
     dataloaders: DataloaderBundle,
     epoch: int,
 ):
-    models.seg.train()
-    models.interp.train()
+    training_state.seg.train()
+    training_state.interp.train()
 
     for i, data in enumerate(dataloaders.train):
         images = data["images"]
@@ -173,42 +164,42 @@ def joint_finetune_train(
         batch = Batch(images=images, labels=labels)
 
         # ---- zero grads ----
-        optimizers["interp"].zero_grad()
-        optimizers["seg_finetune"].zero_grad()
+        training_state.optimizers["interp"].zero_grad()
+        training_state.optimizers["seg_finetune"].zero_grad()
 
         # ---- forward seg (grad ON) ----
         seg_output, loss_seg = run_segmentator(
-            models.seg,
-            loss,
+            training_state.seg,
+            training_state.loss,
             batch,
             context.device,
             optimizer=None,   
-            weights=weights["seg"],
+            weights=training_state.weights["seg"],
         )
 
         batch.labels = [seg.detach().argmax(dim=1) for seg in seg_output]
 
         # ---- forward interp ----
         interp_output, loss_interp = run_interpolator(
-            models.interp,
-            loss,
+            training_state.interp,
+            training_state.loss,
             batch,
             context.device,
             optimizer=None,
-            weights=weights["interp"],
+            weights=training_state.weights["interp"],
         )
 
         # ---- combined loss (weighted) ----
         total_loss = (
-            weights["seg"] * loss_seg +
-            weights["interp"] * loss_interp
+            training_state.weights["seg"] * loss_seg +
+            training_state.weights["interp"] * loss_interp
         )
 
         total_loss.backward()
 
         # ---- step ----
-        optimizers["interp"].step()
-        optimizers["seg_finetune"].step()
+        training_state.optimizers["interp"].step()
+        training_state.optimizers["seg_finetune"].step()
 
         # ---- logging ----
         if context.writer and i % 100 == 0:
@@ -232,11 +223,8 @@ def joint_finetune_train(
 
 
 def train_loop(
-    loss,
-    optimizers,
-    weights,
-    models: ModelsBundle,
-    context: ContextBundle,
+    training_state: TrainingState,
+    context: RuntimeContext,
     dataloaders: DataloaderBundle,
 ):
     train_stage = 0
@@ -250,10 +238,7 @@ def train_loop(
 
         if train_stage == 0:
             warmup_train(
-                loss,
-                optimizers,
-                weights,
-                models,
+                training_state,
                 context,
                 dataloaders,
                 epoch,
@@ -261,10 +246,7 @@ def train_loop(
 
         elif train_stage == 1:
             frozen_seg_train(
-                loss,
-                optimizers,
-                weights,
-                models,
+                training_state,
                 context,
                 dataloaders,
                 epoch,
@@ -272,23 +254,17 @@ def train_loop(
 
         elif train_stage == 2:
             joint_finetune_train(
-                loss,
-                optimizers,
-                weights,
-                models,
+                training_state,
                 context,
                 dataloaders,
                 epoch,
             )
 
         val_loss_seg, val_loss_interp, dice_score_seg = validate(
-            loss,
-            optimizers,
-            dataloaders.val,
-            weights,
-            epoch,
-            models,
+            training_state,
             context,
+            dataloaders.val,
+            epoch,
         )
 
         if train_stage == 0 and  dice_score_seg > context.segmentator_score_threshold:

@@ -5,7 +5,7 @@ import torch.nn as nn
 
 
 @dataclass
-class ContextBundle:
+class RuntimeContext:
     device: torch.device
     writer: Any
     logger: Any
@@ -13,14 +13,18 @@ class ContextBundle:
     segmentator_score_threshold: float
 
 @dataclass
+class TrainingState:
+    loss: Any
+    weights: dict
+    optimizers: dict
+    schedulers: dict
+    seg: nn.Module
+    interp: nn.Module
+    
+@dataclass
 class Batch:
     images: List[torch.Tensor]
     labels: List[torch.Tensor]
-
-@dataclass
-class ModelsBundle:
-    seg: nn.Module
-    interp: nn.Module
 
 @dataclass
 class DataloaderBundle:

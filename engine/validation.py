@@ -2,12 +2,17 @@ import torch
 from .training_steps import run_segmentator, run_interpolator
 from utils.dice_score import dice_score_multiclass
 from utils.visualization import samples_comparison, plot_losses
-from .bundles import ContextBundle, ModelsBundle, Batch
+from .bundles import RuntimeContext, Batch, TrainingState, DataloaderBundle
 
 
-def validate(loss, optimizers, dataloader, weights, epoch, models : ModelsBundle,  context : ContextBundle):
-    models.seg.eval()
-    models.interp.eval()
+def validate(
+    training_state: TrainingState,
+    context: RuntimeContext,
+    dataloader,
+    epoch
+        ):
+    training_state.seg.eval()
+    training_state.interp.eval()
     total_loss_seg = 0.0
     total_loss_interp = 0.0
     total_dice_seg = 0.0
@@ -22,8 +27,9 @@ def validate(loss, optimizers, dataloader, weights, epoch, models : ModelsBundle
 
             batch = Batch(images=images, labels=labels)
 
-            seg_output, loss_seg = run_segmentator(models.seg, loss, batch, context.device, optimizers["seg"], weights["seg"], training=False)
-            interp_output, loss_interp = run_interpolator(models.interp, loss, batch, context.device, optimizers["interp"], weights["interp"], training=False)
+            seg_output, loss_seg = run_segmentator(
+                training_state.seg, training_state.loss, batch, context.device, training_state.optimizers["seg"], training_state.weights["seg"], training=False)
+            interp_output, loss_interp = run_interpolator(training_state.interp, training_state.loss, batch, context.device, training_state.optimizers["interp"], training_state.weights["interp"], training=False)
 
             total_loss_seg += loss_seg
             total_loss_interp += loss_interp

@@ -9,7 +9,7 @@ from pathlib import Path
 from data.triplet_dataset import TripletDataset
 from utils import distributed_gpu, visualization, TrainConfig
 import engine.setup as setup
-from engine import train_loop, Loss, ModelsBundle, ContextBundle, DataloaderBundle
+from engine import train_loop, Loss, RuntimeContext, DataloaderBundle, TrainingState
 from models import Interpolator, Segmentator
 from logs.logger import init_logger
 
@@ -91,7 +91,7 @@ def train_fn(cfg, args):
     # ---- Loss / Optimizers ----
     loss = Loss()
 
-    optimizers = setup.create_optimizers(
+    optimizers, schedulers = setup.create_optimizers(
         {"seg": seg, "interp": interp},
         lr_seg=1e-4,
         lr_interp=1e-4,
@@ -104,23 +104,27 @@ def train_fn(cfg, args):
 
     # ---- Train ----
     logger.info("Starting training...")
-    models_bundle = ModelsBundle(seg=seg, interp=interp)
-    context_bundle = ContextBundle(
+    context_bundle = RuntimeContext(
         device=device,
         epochs=cfg.epochs,
         writer=writer,
         logger=logger,
         segmentator_score_threshold=cfg.segmentator_score_threshold,
     )
+    training_state = TrainingState(
+        loss=loss,
+        weights=weights,
+        optimizers=optimizers,
+        schedulers=schedulers,
+        seg=seg,
+        interp=interp,
+    )
     dataloader_bundle = DataloaderBundle(
         train=dataloader_train,
         val=dataloader_val,
     )
     train_loop(
-        loss,
-        optimizers,
-        weights,
-        models_bundle,
+        training_state,
         context_bundle,
         dataloader_bundle,
     )
