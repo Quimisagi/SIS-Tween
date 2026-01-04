@@ -11,6 +11,7 @@ def validate(loss, optimizers, dataloader, weights, epoch, models : ModelsBundle
     total_loss_seg = 0.0
     total_loss_interp = 0.0
     total_dice_seg = 0.0
+    total_dice_interp = 0.0
 
     n_batches = len(dataloader)
 
@@ -33,17 +34,23 @@ def validate(loss, optimizers, dataloader, weights, epoch, models : ModelsBundle
                 dice = dice_score_multiclass(seg_output[i], labels[i])
                 total_dice_seg += dice
 
+            dice_interp = dice_score_multiclass(interp_output, labels[1])
+            total_dice_interp += dice_interp
+
             if context.writer is not None and i % 50 == 0:
                 samples_comparison(context.writer, context.logger, images, labels, seg_output, interp_output, epoch, tag="val_samples")
 
     avg_loss_seg = total_loss_seg / n_batches
     avg_loss_interp = total_loss_interp / n_batches
     avg_dice_seg = total_dice_seg / n_batches / 3
+    avg_dice_interp = total_dice_interp / n_batches
 
     if context.logger:
-        context.logger.info(f"[Validation] Seg_Loss={avg_loss_seg:.4f}, Interp_Loss={avg_loss_interp:.4f}")
+        context.logger.info(f"[Validation] Seg_Loss={avg_loss_seg:.4f}, Interp_Loss={avg_loss_interp:.4f}, Seg_Dice={avg_dice_seg:.4f}, Interp_Dice={avg_dice_interp:.4f}")
 
     if context.writer:
+        context.writer.add_scalar("val_dice/Segmentation", avg_dice_seg, epoch)
+        context.writer.add_scalar("val_dice/Interpolation", avg_dice_interp, epoch)
         plot_losses(context.writer, context.logger, {'Segmentation': avg_loss_seg, 'Interpolation': avg_loss_interp}, epoch * n_batches, tag="val_losses")
 
     return avg_loss_seg, avg_loss_interp, avg_dice_seg

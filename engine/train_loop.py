@@ -46,7 +46,7 @@ def warmup_train(
 
         if context.writer and i % 100 == 0:
             context.logger.info(
-                f"[Step:{i}]: Seg_Loss={loss_seg:.4f}, Interp_Loss={loss_interp:.4f}"
+                f"[Epoch:{epoch + 1}/{context.epochs}][Stage1][Step:{i}]: Seg_Loss={loss_seg:.4f}, Interp_Loss={loss_interp:.4f}"
             )
 
             plot_losses(
@@ -67,7 +67,7 @@ def warmup_train(
                 seg_output,
                 interp_output,
                 epoch,
-                tag="train_samples",
+                tag="train1_train",
             )
 
 def frozen_seg_train(
@@ -114,7 +114,7 @@ def frozen_seg_train(
 
         if context.writer and i % 100 == 0:
             context.logger.info(
-                f"[Stage2][Step:{i}] Interp_Loss={loss_interp:.4f}"
+                f"[Epoch:{epoch + 1}/{context.epochs}][Stage2][Step:{i}] Interp_Loss={loss_interp:.4f}"
             )
 
             plot_losses(
@@ -132,7 +132,7 @@ def frozen_seg_train(
                 seg_output,
                 interp_output,
                 epoch,
-                tag="stage2_train_samples",
+                tag="stage2_train",
             )
 
 def train_loop(
@@ -181,13 +181,6 @@ def train_loop(
             epoch,
             models,
             context,
-        )
-
-        context.logger.info(
-            f"[Epoch:{epoch + 1}/{context.epochs}] "
-            f"Validation Seg_Loss={val_loss_seg:.4f}, "
-            f"Interp_Loss={val_loss_interp:.4f}, "
-            f"Dice_Score={dice_score_seg:.4f}"
         )
 
         if train_stage == 0 and  dice_score_seg > context.segmentator_score_threshold:
