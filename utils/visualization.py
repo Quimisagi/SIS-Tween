@@ -44,18 +44,15 @@ def handle_visualization_labels(label):
 
 def _add_label_to_tensor(tensor, label_text, font_size=24):
     """Helper to add text labels to a single (C, H, W) tensor."""
-    # Convert to PIL (handles normalization internally if needed)
     img = TF.to_pil_image(tensor.cpu())
     
     # Draw text
     draw = ImageDraw.Draw(img)
-    # Use a basic font; for better look, provide a path to a .ttf file
     try:
         font = ImageFont.truetype("arial.ttf", font_size)
     except:
         font = ImageFont.load_default()
         
-    # Draw text with a small black outline for visibility
     x, y = 10, 10
     draw.text((x+1, y+1), label_text, fill="black", font=font)
     draw.text((x, y), label_text, fill="white", font=font)

@@ -65,6 +65,9 @@ def train_fn(cfg, args):
         num_workers=cfg.num_workers,
     )
 
+    logger.info("Validation Dataset and DataLoader ready")
+    logger.debug(f"Validation Dataset size: {len(dataset_val)}")
+
     # ---- Models ----
     interp = Interpolator(sem_c=6, base_c=64).to(device)
     seg = Segmentator().to(device)
