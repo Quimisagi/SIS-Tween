@@ -1,3 +1,4 @@
+import os
 import yaml
 import argparse
 import torch.nn as nn
@@ -15,16 +16,22 @@ from logs.logger import init_logger
 import torch.distributed as dist
 
 def is_dist():
-    return dist.is_available() and dist.is_initialized()
+    return (
+        "RANK" in os.environ and
+        "WORLD_SIZE" in os.environ
+    )
 
 def train_fn(cfg, args):
-    # ---- Distributed setup ----
-    
-    world_size = dist.get_world_size() if is_dist() else 1
-    device, local_rank = setup.prepare_device(cfg.distributed_enabled, world_size)
 
-    if cfg.distributed_enabled and world_size > 1:
+    if cfg.distributed_enabled and is_dist():
         dist.init_process_group(backend="nccl")
+
+    if dist.is_initialized():
+        world_size = dist.get_world_size()
+    else:
+        world_size = 1
+
+    device, local_rank = setup.prepare_device(cfg.distributed_enabled, world_size)
 
     logger = init_logger("train", f"training_rank{local_rank}.log")
     logger.debug(f"Rank {local_rank}/{world_size} using device {device}")
