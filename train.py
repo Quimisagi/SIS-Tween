@@ -14,15 +14,20 @@ from logs.logger import init_logger
 
 import torch.distributed as dist
 
+def is_dist():
+    return dist.is_available() and dist.is_initialized()
+
 def train_fn(cfg, args):
     # ---- Distributed setup ----
-    device, local_rank = setup.prepare_device(cfg.distributed_enabled, cfg.world_size)
+    
+    world_size = dist.get_world_size() if is_dist() else 1
+    device, local_rank = setup.prepare_device(cfg.distributed_enabled, world_size)
 
-    if cfg.distributed_enabled and cfg.world_size > 1:
+    if cfg.distributed_enabled and world_size > 1:
         dist.init_process_group(backend="nccl")
 
     logger = init_logger("train", f"training_rank{local_rank}.log")
-    logger.debug(f"Rank {local_rank}/{cfg.world_size} using device {device}")
+    logger.debug(f"Rank {local_rank}/{world_size} using device {device}")
 
     logger.info("Seting up training...")
     logger.debug(f"Configuration: {cfg}")
@@ -43,7 +48,7 @@ def train_fn(cfg, args):
     dataloader_train = distributed_gpu.prepare(
         dataset_train,
         local_rank,
-        cfg.world_size,
+        world_size,
         cfg.batch_size,
         num_workers=cfg.num_workers,
     )
@@ -60,7 +65,7 @@ def train_fn(cfg, args):
     dataloader_val = distributed_gpu.prepare(
         dataset_val,
         local_rank,
-        cfg.world_size,
+        world_size,
         cfg.batch_size,
         num_workers=cfg.num_workers,
     )
@@ -72,7 +77,7 @@ def train_fn(cfg, args):
     interp = Interpolator(sem_c=6, base_c=64).to(device)
     seg = Segmentator().to(device)
 
-    if cfg.distributed_enabled and cfg.world_size > 1:
+    if cfg.distributed_enabled and world_size > 1:
         interp = nn.parallel.DistributedDataParallel(interp, device_ids=[local_rank])
         seg = nn.parallel.DistributedDataParallel(seg, device_ids=[local_rank])
 

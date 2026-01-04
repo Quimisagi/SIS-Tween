@@ -5,7 +5,6 @@ save_interval: 10
 num_workers: 16
 batch_size: 8
 distributed_enabled: true
-world_size: 1
 image_size: 256
 segmentator_score_threshold: 0.5
 epochs: 50
