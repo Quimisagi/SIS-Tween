@@ -13,5 +13,6 @@ class TrainConfig:
     segmentator_score_threshold : float = 0.1
     epochs: int = 50
     num_seg_classes: int = 6
+    autoencoder_path: str = ""
 
 

@@ -3,12 +3,13 @@ import yaml
 import argparse
 import torch.nn as nn
 from pathlib import Path
+from diffusers import AutoencoderKL
 
 from data.triplet_dataset import TripletDataset
 from utils import distributed_gpu, visualization, TrainConfig
 import engine.setup as setup
 from engine import train_loop, Loss, RuntimeContext, DataloaderBundle, TrainingState
-from models import Interpolator, Segmentator
+from models import Interpolator, Segmentator, Synthesizer
 from logs.logger import init_logger
 
 import torch.distributed as dist
@@ -81,6 +82,9 @@ def train_fn(cfg, args):
     # ---- Models ----
     interp = Interpolator(sem_c=6, base_c=64).to(device)
     seg = Segmentator().to(device)
+
+    vae = AutoencoderKL.from_single_file(cfg.autoencoder_path).to(device)
+    synthesizer = Synthesizer(vae).to(device)
 
     if cfg.distributed_enabled and world_size > 1:
         interp = nn.parallel.DistributedDataParallel(interp, device_ids=[local_rank])

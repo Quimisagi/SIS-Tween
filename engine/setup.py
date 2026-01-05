@@ -38,7 +38,7 @@ def create_optimizers(models, lr_seg=1e-4, lr_interp=1e-4):
 
 def create_weights():
     weights = {
-            "seg": {"ce": 0.25, "dice": 0.5, "focal": 1.0},
-            "interp": {"ce": 0.25, "dice": 0.5, "focal": 1.0},
+            "seg": {"ce": 1.0, "dice": 0.5, "focal": 0.0},
+            "interp": {"ce": 1.0, "dice": 0.5, "focal": 0.0},
     }
     return weights
