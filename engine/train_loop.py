@@ -1,9 +1,6 @@
 import torch
-import torch.nn as nn
-import torch.nn.functional as F
 from torch.utils.data import DistributedSampler
-from utils.dice_score import dice_score_multiclass
-from utils.visualization import samples_comparison, plot_losses
+from utils import visualization
 from .bundles import RuntimeContext,Batch, DataloaderBundle, TrainingState
 from .training_steps import run_segmentator, run_interpolator
 from .validation import validate
@@ -28,67 +25,165 @@ def relative_improvement_window(
 
     return (old - new) / max(abs(old), eps)
 
+def _make_batch(data):
+    return Batch(
+        images=data["images"],
+        labels=data["labels"],
+    )
+
+
+def _forward_seg(
+    training_state: TrainingState,
+    batch: Batch,
+    device,
+    optimizer=None,
+    require_grad: bool = True,
+):
+    if require_grad:
+        return run_segmentator(
+            training_state.seg,
+            training_state.loss,
+            batch,
+            device,
+            optimizer,
+            training_state.weights["seg"],
+        )
+    else:
+        with torch.no_grad():
+            return run_segmentator(
+                training_state.seg,
+                training_state.loss,
+                batch,
+                device,
+                optimizer=None,
+                weights=training_state.weights["seg"],
+            )
+
+
+def _forward_interp(
+    training_state: TrainingState,
+    batch: Batch,
+    device,
+    optimizer=None,
+):
+    return run_interpolator(
+        training_state.interp,
+        training_state.loss,
+        batch,
+        device,
+        optimizer,
+        training_state.weights["interp"],
+    )
+
+
+def _replace_labels_with_segmentation(batch: Batch, seg_output):
+    batch.labels = [seg.detach().argmax(dim=1) for seg in seg_output]
+
+
+def _log_step(
+    context: RuntimeContext,
+    stage: str,
+    epoch: int,
+    cfg: TrainConfig,
+    global_step: int,
+    losses: dict,
+    images=None,
+    labels=None,
+    seg_output=None,
+    interp_output=None,
+):
+    if not context.writer or global_step % 100 != 0:
+        return
+
+    loss_str = " ".join(f"{k}={v:.4f}" for k, v in losses.items())
+    context.logger.info(
+        f"[{stage}][Epoch:{epoch + 1}/{cfg.epochs}][Step:{global_step}] {loss_str}"
+    )
+
+    if "Segmentation" in losses:
+        visualization.plot(
+                context,
+                {"train" : losses["Segmentation"]},
+            global_step,
+            "loss/segmentation",
+        )
+
+    if "Interpolation" in losses:
+        visualization.plot(
+            context,
+            {"train" : losses["Interpolation"]},
+            global_step,
+            "loss/interpolation",
+        )
+
+    if images is not None:
+        visualization.samples_comparison(
+            context,
+            images,
+            labels,
+            seg_output,
+            interp_output,
+            global_step,
+            tag="samples",
+        )
+
+
+# ============================================================
+# Stage 1 — Warmup
+# ============================================================
+
 def warmup_train(
     training_state: TrainingState,
     context: RuntimeContext,
     dataloaders: DataloaderBundle,
     cfg: TrainConfig,
     epoch: int,
+    global_step: int,
 ):
     training_state.seg.train()
     training_state.interp.train()
 
-    for i, data in enumerate(dataloaders.train):
-        images = data["images"]
-        labels = data["labels"]
+    for data in dataloaders.train:
+        batch = _make_batch(data)
 
-        batch = Batch(images=images, labels=labels)
-
-        seg_output, loss_seg = run_segmentator(
-            training_state.seg,
-            training_state.loss,
+        seg_output, loss_seg = _forward_seg(
+            training_state,
             batch,
             context.device,
-            training_state.optimizers["seg"],
-            training_state.weights["seg"],
+            optimizer=training_state.optimizers["seg"],
         )
 
-        interp_output, loss_interp = run_interpolator(
-            training_state.interp,
-            training_state.loss,
+        interp_output, loss_interp = _forward_interp(
+            training_state,
             batch,
             context.device,
-            training_state.optimizers["interp"],
-            training_state.weights["interp"],
+            optimizer=training_state.optimizers["interp"],
         )
 
-        if context.writer and i % 100 == 0:
-            context.logger.info(
-                f"[Stage1][Epoch:{epoch + 1}/{cfg.epochs}][Step:{i}]: "
-                f"Seg_Loss={loss_seg:.4f}, Interp_Loss={loss_interp:.4f}"
-            )
+        _log_step(
+            context,
+            stage="Stage1",
+            epoch=epoch,
+            cfg=cfg,
+            global_step=global_step,
+            losses={
+                "Segmentation": loss_seg,
+                "Interpolation": loss_interp,
+            },
+            images=batch.images,
+            labels=batch.labels,
+            seg_output=seg_output,
+            interp_output=interp_output,
+        )
 
-            plot_losses(
-                context.writer,
-                context.logger,
-                {
-                    "Segmentation": loss_seg,
-                    "Interpolation": loss_interp,
-                },
-                epoch * len(dataloaders.train) + i,
-            )
+        global_step += 1
 
-            samples_comparison(
-                context.writer,
-                context.logger,
-                images,
-                labels,
-                seg_output,
-                interp_output,
-                epoch,
-                tag="train1_train",
-            )
+    return global_step
 
+
+# ============================================================
+# Stage 2 — Frozen segmentation
+# ============================================================
 
 def frozen_seg_train(
     training_state: TrainingState,
@@ -96,65 +191,54 @@ def frozen_seg_train(
     dataloaders: DataloaderBundle,
     cfg: TrainConfig,
     epoch: int,
+    global_step: int,
 ):
     training_state.seg.eval()
+    training_state.interp.train()
+
     for p in training_state.seg.parameters():
         p.requires_grad = False
 
-    training_state.interp.train()
+    for data in dataloaders.train:
+        batch = _make_batch(data)
 
-    for i, data in enumerate(dataloaders.train):
-        images = data["images"]
-        labels = data["labels"]
-
-        batch = Batch(images=images, labels=labels)
-
-        with torch.no_grad():
-            seg_output, _ = run_segmentator(
-                training_state.seg,
-                training_state.loss,
-                batch,
-                context.device,
-                training_state.optimizers["seg"],
-                training_state.weights["seg"],
-                training=False,
-            )
-
-        batch.labels = [seg.detach().argmax(dim=1) for seg in seg_output]
-
-        interp_output, loss_interp = run_interpolator(
-            training_state.interp,
-            training_state.loss,
+        seg_output, _ = _forward_seg(
+            training_state,
             batch,
             context.device,
-            training_state.optimizers["interp"],
-            training_state.weights["interp"],
+            require_grad=False,
         )
 
-        if context.writer and i % 100 == 0:
-            context.logger.info(
-                f"[Stage2][Epoch:{epoch + 1}/{cfg.epochs}][Step:{i}] "
-                f"Interp_Loss={loss_interp:.4f}"
-            )
+        _replace_labels_with_segmentation(batch, seg_output)
 
-            plot_losses(
-                context.writer,
-                context.logger,
-                {"Interpolation": loss_interp},
-                epoch * len(dataloaders.train) + i,
-            )
+        interp_output, loss_interp = _forward_interp(
+            training_state,
+            batch,
+            context.device,
+            optimizer=training_state.optimizers["interp"],
+        )
 
-            samples_comparison(
-                context.writer,
-                context.logger,
-                images,
-                labels,
-                seg_output,
-                interp_output,
-                epoch,
-                tag="stage2_train",
-            )
+        _log_step(
+            context,
+            stage="Stage2",
+            epoch=epoch,
+            cfg=cfg,
+            global_step=global_step,
+            losses={"Interpolation": loss_interp},
+            images=batch.images,
+            labels=batch.labels,
+            seg_output=seg_output,
+            interp_output=interp_output,
+        )
 
+        global_step += 1
+
+    return global_step
+
+
+# ============================================================
+# Stage 3 — Joint finetuning
+# ============================================================
 
 def joint_finetune_train(
     training_state: TrainingState,
@@ -162,67 +246,58 @@ def joint_finetune_train(
     dataloaders: DataloaderBundle,
     cfg: TrainConfig,
     epoch: int,
+    global_step: int,
 ):
     training_state.seg.train()
     training_state.interp.train()
 
-    for i, data in enumerate(dataloaders.train):
-        images = data["images"]
-        labels = data["labels"]
-
-        batch = Batch(images=images, labels=labels)
+    for data in dataloaders.train:
+        batch = _make_batch(data)
 
         training_state.optimizers["interp"].zero_grad()
         training_state.optimizers["seg_finetune"].zero_grad()
 
-        seg_output, loss_seg = run_segmentator(
-            training_state.seg,
-            training_state.loss,
+        seg_output, loss_seg = _forward_seg(
+            training_state,
             batch,
             context.device,
             optimizer=None,
-            weights=training_state.weights["seg"],
         )
 
-        batch.labels = [seg.detach().argmax(dim=1) for seg in seg_output]
+        _replace_labels_with_segmentation(batch, seg_output)
 
-        interp_output, loss_interp = run_interpolator(
-            training_state.interp,
-            training_state.loss,
+        interp_output, loss_interp = _forward_interp(
+            training_state,
             batch,
             context.device,
             optimizer=None,
-            weights=training_state.weights["interp"],
         )
 
         total_loss = (
-            training_state.weights["seg"] * loss_seg +
-            training_state.weights["interp"] * loss_interp
+            training_state.weights["seg"] * loss_seg
+            + training_state.weights["interp"] * loss_interp
         )
 
         total_loss.backward()
-
         training_state.optimizers["interp"].step()
         training_state.optimizers["seg_finetune"].step()
 
-        if context.writer and i % 100 == 0:
-            context.logger.info(
-                f"[Stage3][Epoch:{epoch + 1}/{cfg.epochs}][Step:{i}] "
-                f"Total={total_loss:.4f} "
-                f"Seg={loss_seg:.4f} "
-                f"Interp={loss_interp:.4f}"
-            )
+        _log_step(
+            context,
+            stage="Stage3",
+            epoch=epoch,
+            cfg=cfg,
+            global_step=global_step,
+            losses={
+                "Total": total_loss,
+                "Segmentation": loss_seg,
+                "Interpolation": loss_interp,
+            },
+        )
 
-            plot_losses(
-                context.writer,
-                context.logger,
-                {
-                    "Total": total_loss,
-                    "Segmentation": loss_seg,
-                    "Interpolation": loss_interp,
-                },
-                epoch * len(dataloaders.train) + i,
-            )
+        global_step += 1
+
+    return global_step
 
 
 def train_loop(
@@ -234,6 +309,8 @@ def train_loop(
     train_stage = 0
     interp_val_history = deque(maxlen=5)
 
+    global_step = 0
+
     for epoch in range(cfg.epochs):
         if isinstance(dataloaders.train.sampler, DistributedSampler):
             dataloaders.train.sampler.set_epoch(epoch)
@@ -242,66 +319,62 @@ def train_loop(
             dataloaders.val.sampler.set_epoch(epoch)
 
         if train_stage == 0:
-            warmup_train(
+            global_step = warmup_train(
                 training_state,
                 context,
                 dataloaders,
                 cfg,
                 epoch,
+                global_step,
             )
 
         elif train_stage == 1:
-            frozen_seg_train(
+            global_step = frozen_seg_train(
                 training_state,
                 context,
                 dataloaders,
                 cfg,
                 epoch,
+                global_step,
             )
 
         elif train_stage == 2:
-            joint_finetune_train(
+            global_step = joint_finetune_train(
                 training_state,
                 context,
                 dataloaders,
                 cfg,
                 epoch,
+                global_step,
             )
 
         val_loss_seg, val_loss_interp, dice_score_seg = validate(
             training_state,
             context,
             dataloaders.val,
-            epoch,
+            global_step,
         )
 
         if train_stage == 0 and dice_score_seg > cfg.segmentator_score_threshold:
             context.logger.info(
                 f"Dice score {dice_score_seg:.4f} exceeded "
-                f"threshold {cfg.segmentator_score_threshold:.4f}."
-            )
-            context.logger.info(
-                "Switching to Stage 2 training (frozen Segmentator)."
+                f"threshold {cfg.segmentator_score_threshold:.4f}. "
+                "Switching to Stage 2."
             )
             train_stage = 1
 
         if train_stage == 1:
             interp_val_history.append(val_loss_interp)
 
-            interp_plateau = False
             if len(interp_val_history) == interp_val_history.maxlen:
                 ri = relative_improvement_window(list(interp_val_history))
 
                 context.logger.info(
-                    f"[Interp] Relative improvement over last "
-                    f"{len(interp_val_history)} epochs: {ri:.4%}"
+                    f"[Interp] Relative improvement: {ri:.4%}"
                 )
 
-                interp_plateau = ri < 0.01
-
-            if interp_plateau:
-                context.logger.info(
-                    "Interpolation validation loss plateaued. "
-                    "Switching to Stage 3 training (joint finetune)."
-                )
-                train_stage = 2
+                if ri < 0.01:
+                    context.logger.info(
+                        "Interpolation plateaued. Switching to Stage 3."
+                    )
+                    train_stage = 2

@@ -1,15 +1,15 @@
 import torch
 from .training_steps import run_segmentator, run_interpolator
 from utils.dice_score import dice_score_multiclass
-from utils.visualization import samples_comparison, plot_losses
-from .bundles import RuntimeContext, Batch, TrainingState, DataloaderBundle
+from utils import visualization
+from .bundles import RuntimeContext, Batch, TrainingState
 
 
 def validate(
     training_state: TrainingState,
     context: RuntimeContext,
     dataloader,
-    epoch
+    global_step
         ):
     training_state.seg.eval()
     training_state.interp.eval()
@@ -43,8 +43,7 @@ def validate(
             dice_interp = dice_score_multiclass(interp_output, labels[1])
             total_dice_interp += dice_interp
 
-            if context.writer is not None and i % 50 == 0:
-                samples_comparison(context.writer, context.logger, images, labels, seg_output, interp_output, epoch, tag="val_samples")
+            visualization.samples_comparison(context, images, labels, seg_output, interp_output, global_step, tag="val_samples")
 
     avg_loss_seg = total_loss_seg / n_batches
     avg_loss_interp = total_loss_interp / n_batches
@@ -55,8 +54,12 @@ def validate(
         context.logger.info(f"[Validation] Seg_Loss={avg_loss_seg:.4f}, Interp_Loss={avg_loss_interp:.4f}, Seg_Dice={avg_dice_seg:.4f}, Interp_Dice={avg_dice_interp:.4f}")
 
     if context.writer:
-        context.writer.add_scalar("val_dice/Segmentation", avg_dice_seg, epoch)
-        context.writer.add_scalar("val_dice/Interpolation", avg_dice_interp, epoch)
-        plot_losses(context.writer, context.logger, {'Segmentation': avg_loss_seg, 'Interpolation': avg_loss_interp}, epoch * n_batches, tag="val_losses")
+        dice_scalars = {
+                "segmentation_loss": avg_dice_seg,
+                "interpolation_loss": avg_dice_interp,
+        }
+        visualization.plot(context,dice_scalars, global_step, tag="dice")
+        visualization.plot(context, {"validation": avg_loss_seg}, global_step, "loss/segmentation")
+    visualization.plot(context, {"validation": avg_loss_interp}, global_step, "loss/interpolation")
 
     return avg_loss_seg, avg_loss_interp, avg_dice_seg

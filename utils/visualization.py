@@ -63,8 +63,21 @@ def _denormalize(tensor):
     """Brings a [-1, 1] tensor to [0, 1] for visualization."""
     return torch.clamp((tensor + 1.0) / 2.0, 0, 1)
 
-def samples_comparison(writer, logger, gt_images, gt_labels, seg_labels, interp_label, epoch, tag="samples"):
+def samples_comparison(
+    context,
+    gt_images,
+    gt_labels,
+    seg_labels,
+    interp_label,
+    global_step,
+    tag="samples",
+):
+    writer = context.writer
+    logger = context.logger
+
     if writer is None:
+        return
+    if torch.distributed.is_initialized() and torch.distributed.get_rank() != 0:
         return
 
     try:
@@ -77,6 +90,7 @@ def samples_comparison(writer, logger, gt_images, gt_labels, seg_labels, interp_
         row_gt_img = [preprocess(img, True) for img in gt_images]
         row_gt_lbl = [preprocess(handle_visualization_labels(lbl)) for lbl in gt_labels]
         row_seg    = [preprocess(seg_to_rgb.seg_to_rgb(lbl.detach())) for lbl in seg_labels]
+
         interp_img = preprocess(seg_to_rgb.seg_to_rgb(interp_label.detach()))
         empty      = torch.zeros_like(interp_img)
         row_interp = [empty, interp_img, empty]
@@ -88,6 +102,7 @@ def samples_comparison(writer, logger, gt_images, gt_labels, seg_labels, interp_
             "SEG_0",    "SEG_1",    "SEG_2",
             "",         "INTERP",   ""
         ]
+
         labeled_images = []
         for img, txt in zip(all_images, text_labels):
             if txt != "":
@@ -96,21 +111,48 @@ def samples_comparison(writer, logger, gt_images, gt_labels, seg_labels, interp_
                 labeled_images.append(img)
 
         grid = make_grid(labeled_images, nrow=3, padding=4)
-        writer.add_image(tag, grid, epoch)
+        writer.add_image(tag, grid, global_step)
 
         for i, (img, txt) in enumerate(zip(all_images, text_labels)):
             img_labeled = _add_label_to_tensor(img, txt) if txt != "" else img
-            writer.add_image(f"{tag}/individual/{txt or f'img_{i}'}", img_labeled, epoch)
+            writer.add_image(f"{tag}/{txt or f'img_{i}'}", img_labeled, global_step)
 
     except Exception as e:
         logger.error(f"Visualization failed: {e}")
 
-def plot_losses(writer, logger, loss_dict, epoch, tag="losses"):
-    if writer is None:
+def plot(context, values, global_step, tag=None):
+    """
+    Flexible TensorBoard plotting helper.
+
+    Supported:
+    - plot(writer, logger, scalar, step, "tag")
+    - plot(writer, logger, {"loss": scalar}, step, "tag")
+    - plot(writer, logger, {"loss": x, "dice": y}, step, "tag")
+    - plot(writer, logger, {"tag1": {...}, "tag2": {...}}, step)
+    """
+
+    if context.writer is None:
+        return
+
+    if torch.distributed.is_initialized() and torch.distributed.get_rank() != 0:
         return
 
     try:
-        for loss_name, loss_value in loss_dict.items():
-            writer.add_scalar(f"{tag}/{loss_name}", loss_value, epoch)
+        # Case 1: single scalar
+        if isinstance(values, (int, float)):
+            if tag is None:
+                raise ValueError("tag must be provided for scalar values")
+            context.writer.add_scalar(tag, values, global_step)
+            return
+
+        # Case 2: dict of scalars -> single plot
+        if tag is not None:
+            context.writer.add_scalars(tag, values, global_step)
+            return
+
+        # Case 3: dict of dicts -> multiple plots
+        for plot_tag, scalars in values.items():
+            context.writer.add_scalars(plot_tag, scalars, global_step)
+
     except Exception as e:
-        logger.error(f"Logging losses failed: {e}")
+        context.logger.error(f"Logging failed: {e}")

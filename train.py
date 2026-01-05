@@ -2,8 +2,6 @@ import os
 import yaml
 import argparse
 import torch.nn as nn
-from torch.utils.data import DataLoader
-from torch.utils.tensorboard.writer import SummaryWriter
 from pathlib import Path
 
 from data.triplet_dataset import TripletDataset
