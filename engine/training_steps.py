@@ -25,10 +25,12 @@ def _segmentator_step(seg, loss_fn, image, label, device, weights=None):
 
     loss_ce = loss_fn.ce(seg_output, seg_label)
     loss_dice = loss_fn.dice(seg_output, seg_label)
+    loss_focal = loss_fn.focal(seg_output, seg_label.argmax(dim=1))
 
     if weights:
         loss_ce *= weights.get('ce', 1.0)
         loss_dice *= weights.get('dice', 1.0)
+        loss_focal *= weights.get('focal', 1.0)
 
     loss_total = loss_ce + loss_dice
     assert torch.isfinite(loss_total)
@@ -81,10 +83,12 @@ def _interpolator_step(interp, loss_fn, batch, device, weights=None, num_classes
 
     loss_ce = loss_fn.ce(generated, target.argmax(dim=1))
     loss_dice = loss_fn.dice(generated, target)
+    loss_focal = loss_fn.focal(generated, target.argmax(dim=1))
 
     if weights:
         loss_ce *= weights.get('ce', 1.0)
         loss_dice *= weights.get('dice', 1.0)
+        loss_focal *= weights.get('focal', 1.0)
 
     loss_total = loss_ce + loss_dice
     assert torch.isfinite(loss_total)
