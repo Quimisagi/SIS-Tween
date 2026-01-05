@@ -10,9 +10,8 @@ import torchvision
 from torchvision.models import MobileNet_V2_Weights
 
 class Segmentator(nn.Module):
-    def __init__(self):
+    def __init__(self, num_seg_classes=6):
         super(Segmentator, self).__init__()
-        self.NUM_SEG_CLASSES = 6 # Background, hair, face, eye, mouth, skin, clothes
         
         mobilenet_v2 = torchvision.models.mobilenet_v2(weights=MobileNet_V2_Weights.IMAGENET1K_V1)
         mob_blocks = mobilenet_v2.features
@@ -76,9 +75,9 @@ class Segmentator(nn.Module):
             nn.Dropout(p=0.2)
         )
         
-        self.de_block0 = nn.Sequential(     # in_ch=16x2 out_ch=7
+        self.de_block0 = nn.Sequential(     # in_ch=16x2 out_ch=num_seg_classes
             nn.UpsamplingNearest2d(scale_factor=2),
-            nn.Conv2d(16*2, self.NUM_SEG_CLASSES, kernel_size=3, padding=1),
+            nn.Conv2d(16*2,num_seg_classes, kernel_size=3, padding=1),
             nn.Softmax2d()
         )
         

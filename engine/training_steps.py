@@ -71,9 +71,9 @@ def run_segmentator(
 
     return generated, total_loss / len(batch.images)
 
-def _interpolator_step(interp, loss_fn, batch, device, weights=None):
-    input_a = _prepare_interp_input(batch.labels[0], batch.images[0], device)
-    input_b = _prepare_interp_input(batch.labels[2], batch.images[2], device)
+def _interpolator_step(interp, loss_fn, batch, device, weights=None, num_classes=6):
+    input_a = _prepare_interp_input(batch.labels[0], batch.images[0], device, num_classes)
+    input_b = _prepare_interp_input(batch.labels[2], batch.images[2], device, num_classes)
     target = _prepare_label(batch.labels[1], device)
 
     generated = interp(input_a, input_b)

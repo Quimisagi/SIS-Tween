@@ -106,10 +106,8 @@ def train_fn(cfg, args):
     logger.info("Starting training...")
     context_bundle = RuntimeContext(
         device=device,
-        epochs=cfg.epochs,
         writer=writer,
         logger=logger,
-        segmentator_score_threshold=cfg.segmentator_score_threshold,
     )
     training_state = TrainingState(
         loss=loss,
@@ -127,6 +125,7 @@ def train_fn(cfg, args):
         training_state,
         context_bundle,
         dataloader_bundle,
+        cfg,
     )
 
     dist.destroy_process_group()

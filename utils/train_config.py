@@ -12,5 +12,6 @@ class TrainConfig:
     save_interval: int = 5
     segmentator_score_threshold : float = 0.1
     epochs: int = 50
+    num_seg_classes: int = 6
 
 

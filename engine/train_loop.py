@@ -8,6 +8,7 @@ from .bundles import RuntimeContext,Batch, DataloaderBundle, TrainingState
 from .training_steps import run_segmentator, run_interpolator
 from .validation import validate
 from collections import deque
+from utils import TrainConfig
 
 def relative_improvement_window(
     values: list[float],
@@ -31,6 +32,7 @@ def warmup_train(
     training_state: TrainingState,
     context: RuntimeContext,
     dataloaders: DataloaderBundle,
+    cfg: TrainConfig,
     epoch: int,
 ):
     training_state.seg.train()
@@ -62,7 +64,8 @@ def warmup_train(
 
         if context.writer and i % 100 == 0:
             context.logger.info(
-                f"[Stage1][Epoch:{epoch + 1}/{context.epochs}][Step:{i}]: Seg_Loss={loss_seg:.4f}, Interp_Loss={loss_interp:.4f}"
+                f"[Stage1][Epoch:{epoch + 1}/{cfg.epochs}][Step:{i}]: "
+                f"Seg_Loss={loss_seg:.4f}, Interp_Loss={loss_interp:.4f}"
             )
 
             plot_losses(
@@ -86,10 +89,12 @@ def warmup_train(
                 tag="train1_train",
             )
 
+
 def frozen_seg_train(
     training_state: TrainingState,
     context: RuntimeContext,
     dataloaders: DataloaderBundle,
+    cfg: TrainConfig,
     epoch: int,
 ):
     training_state.seg.eval()
@@ -116,6 +121,7 @@ def frozen_seg_train(
             )
 
         batch.labels = [seg.detach().argmax(dim=1) for seg in seg_output]
+
         interp_output, loss_interp = run_interpolator(
             training_state.interp,
             training_state.loss,
@@ -127,7 +133,8 @@ def frozen_seg_train(
 
         if context.writer and i % 100 == 0:
             context.logger.info(
-                f"[Stage2][Epoch:{epoch + 1}/{context.epochs}][Step:{i}] Interp_Loss={loss_interp:.4f}"
+                f"[Stage2][Epoch:{epoch + 1}/{cfg.epochs}][Step:{i}] "
+                f"Interp_Loss={loss_interp:.4f}"
             )
 
             plot_losses(
@@ -148,10 +155,12 @@ def frozen_seg_train(
                 tag="stage2_train",
             )
 
+
 def joint_finetune_train(
     training_state: TrainingState,
     context: RuntimeContext,
     dataloaders: DataloaderBundle,
+    cfg: TrainConfig,
     epoch: int,
 ):
     training_state.seg.train()
@@ -163,23 +172,20 @@ def joint_finetune_train(
 
         batch = Batch(images=images, labels=labels)
 
-        # ---- zero grads ----
         training_state.optimizers["interp"].zero_grad()
         training_state.optimizers["seg_finetune"].zero_grad()
 
-        # ---- forward seg (grad ON) ----
         seg_output, loss_seg = run_segmentator(
             training_state.seg,
             training_state.loss,
             batch,
             context.device,
-            optimizer=None,   
+            optimizer=None,
             weights=training_state.weights["seg"],
         )
 
         batch.labels = [seg.detach().argmax(dim=1) for seg in seg_output]
 
-        # ---- forward interp ----
         interp_output, loss_interp = run_interpolator(
             training_state.interp,
             training_state.loss,
@@ -189,7 +195,6 @@ def joint_finetune_train(
             weights=training_state.weights["interp"],
         )
 
-        # ---- combined loss (weighted) ----
         total_loss = (
             training_state.weights["seg"] * loss_seg +
             training_state.weights["interp"] * loss_interp
@@ -197,14 +202,12 @@ def joint_finetune_train(
 
         total_loss.backward()
 
-        # ---- step ----
         training_state.optimizers["interp"].step()
         training_state.optimizers["seg_finetune"].step()
 
-        # ---- logging ----
         if context.writer and i % 100 == 0:
             context.logger.info(
-                f"[Stage3][Step:{i}] "
+                f"[Stage3][Epoch:{epoch + 1}/{cfg.epochs}][Step:{i}] "
                 f"Total={total_loss:.4f} "
                 f"Seg={loss_seg:.4f} "
                 f"Interp={loss_interp:.4f}"
@@ -226,10 +229,12 @@ def train_loop(
     training_state: TrainingState,
     context: RuntimeContext,
     dataloaders: DataloaderBundle,
+    cfg: TrainConfig,
 ):
     train_stage = 0
     interp_val_history = deque(maxlen=5)
-    for epoch in range(context.epochs):
+
+    for epoch in range(cfg.epochs):
         if isinstance(dataloaders.train.sampler, DistributedSampler):
             dataloaders.train.sampler.set_epoch(epoch)
 
@@ -241,6 +246,7 @@ def train_loop(
                 training_state,
                 context,
                 dataloaders,
+                cfg,
                 epoch,
             )
 
@@ -249,6 +255,7 @@ def train_loop(
                 training_state,
                 context,
                 dataloaders,
+                cfg,
                 epoch,
             )
 
@@ -257,6 +264,7 @@ def train_loop(
                 training_state,
                 context,
                 dataloaders,
+                cfg,
                 epoch,
             )
 
@@ -267,15 +275,17 @@ def train_loop(
             epoch,
         )
 
-        if train_stage == 0 and  dice_score_seg > context.segmentator_score_threshold:
+        if train_stage == 0 and dice_score_seg > cfg.segmentator_score_threshold:
             context.logger.info(
                 f"Dice score {dice_score_seg:.4f} exceeded "
-                f"threshold {context.segmentator_score_threshold:.4f}."
+                f"threshold {cfg.segmentator_score_threshold:.4f}."
             )
-            context.logger.info("Switching to Stage 2 training (frozen Segmentator).")
+            context.logger.info(
+                "Switching to Stage 2 training (frozen Segmentator)."
+            )
             train_stage = 1
 
-        if train_stage == 1: 
+        if train_stage == 1:
             interp_val_history.append(val_loss_interp)
 
             interp_plateau = False
@@ -287,7 +297,7 @@ def train_loop(
                     f"{len(interp_val_history)} epochs: {ri:.4%}"
                 )
 
-                interp_plateau = ri < 0.01  # 1% threshold
+                interp_plateau = ri < 0.01
 
             if interp_plateau:
                 context.logger.info(
@@ -295,4 +305,3 @@ def train_loop(
                     "Switching to Stage 3 training (joint finetune)."
                 )
                 train_stage = 2
-

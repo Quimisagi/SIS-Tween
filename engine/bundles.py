@@ -9,8 +9,6 @@ class RuntimeContext:
     device: torch.device
     writer: Any
     logger: Any
-    epochs: int
-    segmentator_score_threshold: float
 
 @dataclass
 class TrainingState:

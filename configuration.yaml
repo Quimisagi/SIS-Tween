@@ -8,3 +8,4 @@ distributed_enabled: true
 image_size: 256
 segmentator_score_threshold: 0.75
 epochs: 50
+num_seg_classes: 6
