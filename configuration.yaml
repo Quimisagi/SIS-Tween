@@ -3,10 +3,10 @@ tensorboard_logs_dir: runs/
 save_progress: true
 save_interval: 10
 num_workers: 16
-batch_size: 16
+batch_size: 4
 distributed_enabled: true
-image_size: 256
+image_size: 128
 segmentator_score_threshold: 0.75
-epochs: 50
+epochs: 100
 num_seg_classes: 6
 autoencoder_path: models/cleanvae_v10.safetensors

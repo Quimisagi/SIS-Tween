@@ -185,7 +185,7 @@ class SPADEGenerator(nn.Module):
         return x
 
 class Synthesizer(nn.Module):
-    def __init__(self, vae):
+    def __init__(self, vae, image_size=128):
         super().__init__()
         self.vae = vae
 
@@ -193,11 +193,19 @@ class Synthesizer(nn.Module):
             p.requires_grad = False
         self.vae.eval()
 
+        # ---- Diffusers VAE latent size ----
+        self.latent_channels = vae.config.latent_channels  # usually 4
+        self.latent_hw = image_size // 8                    # usually 32
+        self.vae_z_dim = self.latent_channels * self.latent_hw * self.latent_hw
+
+        self.spade_z_dim = 128
+        self.z_proj = nn.Linear(self.vae_z_dim * 2, self.spade_z_dim)
+
         spade_config = SPADEConfig(
             semantic_nc=6,
             ngf=64,
-            z_dim=256,
-            crop_size=256,
+            z_dim=self.spade_z_dim,
+            crop_size=image_size,
             aspect_ratio=1.0,
             num_upsampling_layers="normal",
         )
@@ -207,8 +215,15 @@ class Synthesizer(nn.Module):
     def encode(self, images):
         with torch.no_grad():
             latent_dist = self.vae.encode(images).latent_dist
-            return latent_dist.mean
+            z = latent_dist.sample()    # [B, 4, 32, 32]
+            return z
 
-    def forward(self, images, segmap):
-        latent_z = self.encode(images)
-        return self.generator(segmap, latent_z)
+    def forward(self, frame1, frame2, segmap):
+        z1 = self.encode(frame1)
+        z2 = self.encode(frame2)
+
+        z = torch.cat([z1, z2], dim=1)
+        z = z.flatten(start_dim=1)
+        z = self.z_proj(z)
+
+        return self.generator(segmap, z)

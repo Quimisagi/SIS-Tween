@@ -2,7 +2,7 @@ import torch
 from torch.utils.data import DistributedSampler
 from utils import visualization
 from .bundles import RuntimeContext,Batch, DataloaderBundle, TrainingState
-from .training_steps import run_segmentator, run_interpolator
+from .training_steps import run_segmentator, run_interpolator, run_synthesizer
 from .validation import validate
 from collections import deque
 from utils import TrainConfig
@@ -75,6 +75,21 @@ def _forward_interp(
         training_state.weights["interp"],
     )
 
+def _forward_synth(
+        training_state: TrainingState,
+        batch: Batch,
+        device,
+        optimizer=None,
+        ):
+    return run_synthesizer(
+        training_state.synth,
+        training_state.loss,
+        batch,
+        device,
+        optimizer,
+        weights=training_state.weights["synth"],
+    )
+
 
 def _replace_labels_with_segmentation(batch: Batch, seg_output):
     batch.labels = [seg.detach().argmax(dim=1) for seg in seg_output]
@@ -89,8 +104,7 @@ def _log_step(
     losses: dict,
     images=None,
     labels=None,
-    seg_output=None,
-    interp_output=None,
+    outputs=None,
 ):
     if not context.writer or global_step % 100 != 0:
         return
@@ -121,8 +135,7 @@ def _log_step(
             context,
             images,
             labels,
-            seg_output,
-            interp_output,
+            outputs,
             global_step,
             tag="samples",
         )
@@ -159,6 +172,12 @@ def warmup_train(
             context.device,
             optimizer=training_state.optimizers["interp"],
         )
+        synth_output, loss_synth = _forward_synth(
+            training_state,
+            batch,
+            context.device,
+            optimizer=training_state.optimizers["synth"],
+            )
 
         _log_step(
             context,
@@ -169,11 +188,11 @@ def warmup_train(
             losses={
                 "Segmentation": loss_seg,
                 "Interpolation": loss_interp,
+                "Synthesis": loss_synth,
             },
             images=batch.images,
             labels=batch.labels,
-            seg_output=seg_output,
-            interp_output=interp_output,
+            outputs={"seg": seg_output, "interp": interp_output, "synth": synth_output},
         )
 
         global_step += 1
@@ -218,6 +237,11 @@ def frozen_seg_train(
             optimizer=training_state.optimizers["interp"],
         )
 
+        outputs = {
+            "seg": seg_output,
+            "interp": interp_output,
+        }
+
         _log_step(
             context,
             stage="Stage2",
@@ -227,8 +251,7 @@ def frozen_seg_train(
             losses={"Interpolation": loss_interp},
             images=batch.images,
             labels=batch.labels,
-            seg_output=seg_output,
-            interp_output=interp_output,
+            outputs=outputs,
         )
 
         global_step += 1
@@ -317,6 +340,10 @@ def train_loop(
 
         if isinstance(dataloaders.val.sampler, DistributedSampler):
             dataloaders.val.sampler.set_epoch(epoch)
+
+        training_state.schedulers["seg"].step()
+        training_state.schedulers["interp"].step()
+
 
         if train_stage == 0:
             global_step = warmup_train(

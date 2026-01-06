@@ -13,6 +13,12 @@ def _prepare_interp_input(label, image, device, num_classes=6):
     image = image.to(device)
     return torch.cat([image, label], dim=1)
 
+def _prepare_synth_input(batch, device, num_classes=6):
+    label = _prepare_label(batch.labels[1], device, num_classes)
+    image0 = batch.images[0].to(device)
+    image2 = batch.images[2].to(device)
+    return label, image0, image2
+
 def _segmentator_step(seg, loss_fn, image, label, device, weights=None):
     seg_img = image.to(device)
     seg_label = _prepare_label(label, device)
@@ -123,3 +129,66 @@ def run_interpolator(
         optimizer.step()
 
     return generated.detach(), loss_val.item()
+
+def _synthesizer_step(
+    synthesizer,
+    loss_fn,
+    batch,
+    device,
+    num_classes=6,
+    weights=None,
+):
+    label, image0, image2 = _prepare_synth_input(batch, device, num_classes)
+
+    generated = synthesizer(image0, image2, label)
+    target = batch.images[1].to(device)
+    loss_perceptual = loss_fn.perceptual(generated, target)
+
+
+
+    if weights is not None:
+        loss_perceptual = loss_perceptual * weights.get("perceptual", 1.0)
+
+    loss_total = loss_perceptual
+
+    assert torch.isfinite(loss_total).all(), "Non-finite loss detected"
+
+    return generated, loss_total
+
+
+def run_synthesizer(
+    synthesizer,
+    loss_fn,
+    batch,
+    device,
+    optimizer,
+    weights,
+    training: bool = True,
+    num_classes: int = 6,
+):
+
+    if training:
+        synthesizer.train()
+    else:
+        synthesizer.eval()
+
+    torch.set_grad_enabled(training)
+
+    if training:
+        optimizer.zero_grad(set_to_none=True)
+
+    generated, loss_val = _synthesizer_step(
+        synthesizer,
+        loss_fn,
+        batch,
+        device,
+        num_classes,
+        weights,
+    )
+    if training:
+        loss_val.backward()
+        optimizer.step()
+
+
+
+    return generated, loss_val.item()

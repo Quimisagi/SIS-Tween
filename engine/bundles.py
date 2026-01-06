@@ -18,6 +18,7 @@ class TrainingState:
     schedulers: dict
     seg: nn.Module
     interp: nn.Module
+    synth: nn.Module
     
 @dataclass
 class Batch:

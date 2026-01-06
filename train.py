@@ -91,10 +91,10 @@ def train_fn(cfg, args):
         seg = nn.parallel.DistributedDataParallel(seg, device_ids=[local_rank])
 
     # ---- Loss / Optimizers ----
-    loss = Loss()
+    loss = Loss(device)
 
     optimizers, schedulers = setup.create_optimizers(
-        {"seg": seg, "interp": interp},
+            {"seg": seg, "interp": interp, "synth": synthesizer},
         lr_seg=1e-4,
         lr_interp=1e-4,
     )
@@ -118,6 +118,7 @@ def train_fn(cfg, args):
         schedulers=schedulers,
         seg=seg,
         interp=interp,
+        synth=synthesizer
     )
     dataloader_bundle = DataloaderBundle(
         train=dataloader_train,

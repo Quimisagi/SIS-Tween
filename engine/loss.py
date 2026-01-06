@@ -1,6 +1,8 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torchvision import models
+from torchvision.models import VGG19_Weights
 
 def multiclass_dice_loss(logits, target, eps=1e-6):
     """
@@ -49,16 +51,33 @@ def focal_loss(
     else:
         raise ValueError(f"Invalid reduction: {reduction}")
 
+def perceptual_loss(x, y, vgg):
+    """
+    Computes perceptual loss between x (fake) and y (real).
+    Assumes images are in range [0, 1] or [-1, 1] and 4D tensors.
+    """
+    return F.l1_loss(vgg(x), vgg(y))
 
-class Loss:
-    def __init__(self):
-        self.ce = nn.CrossEntropyLoss()
+
+class Loss(nn.Module):
+    def __init__(self, device):
+        super().__init__()
+        self.ce_loss = nn.CrossEntropyLoss()
+        self.vgg = models.vgg19(weights=VGG19_Weights.IMAGENET1K_V1).features[:19].eval().to(device)
+        for param in self.vgg.parameters():
+            param.requires_grad = False
 
     def ce(self, p, t):
-        return self.ce(p, t)
+        return self.ce_loss(p, t)
 
     def dice(self, p, t):
         return multiclass_dice_loss(p, t)
 
     def focal(self, p, t):
         return focal_loss(p, t)
+
+    def perceptual(self, p, t):
+        # Ensure p and t are 3-channel RGB [B, 3, H, W]
+        p_vgg = self.vgg(p)
+        t_vgg = self.vgg(t)
+        return torch.nn.functional.l1_loss(p_vgg, t_vgg)

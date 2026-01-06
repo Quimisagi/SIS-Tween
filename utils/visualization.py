@@ -67,8 +67,7 @@ def samples_comparison(
     context,
     gt_images,
     gt_labels,
-    seg_labels,
-    interp_label,
+    outputs,
     global_step,
     tag="samples",
 ):
@@ -89,18 +88,21 @@ def samples_comparison(
 
         row_gt_img = [preprocess(img, True) for img in gt_images]
         row_gt_lbl = [preprocess(handle_visualization_labels(lbl)) for lbl in gt_labels]
-        row_seg    = [preprocess(seg_to_rgb.seg_to_rgb(lbl.detach())) for lbl in seg_labels]
+        row_seg    = [preprocess(seg_to_rgb.seg_to_rgb(lbl.detach())) for lbl in outputs["seg"]]
 
-        interp_img = preprocess(seg_to_rgb.seg_to_rgb(interp_label.detach()))
+        interp_img = preprocess(seg_to_rgb.seg_to_rgb(outputs["interp"].detach()))
         empty      = torch.zeros_like(interp_img)
         row_interp = [empty, interp_img, empty]
+
+        # row_synth = [preprocess(_denormalize(syn.detach())) for syn in outputs.get("synth", [])]
+
 
         all_images = row_gt_img + row_gt_lbl + row_seg + row_interp
         text_labels = [
             "GT_IMG_0", "GT_IMG_1", "GT_IMG_2",
             "GT_LBL_0", "GT_LBL_1", "GT_LBL_2",
             "SEG_0",    "SEG_1",    "SEG_2",
-            "",         "INTERP",   ""
+            "",   "INTERP",   ""
         ]
 
         labeled_images = []
