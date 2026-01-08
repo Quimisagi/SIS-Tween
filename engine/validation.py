@@ -1,5 +1,5 @@
 import torch
-from .training_steps import run_segmentator, run_interpolator
+from .training_steps import run_segmentator, run_interpolator, run_synthesizer
 from utils.dice_score import dice_score_multiclass
 from utils import visualization
 from .bundles import RuntimeContext, Batch, TrainingState
@@ -30,6 +30,21 @@ def validate(
             seg_output, loss_seg = run_segmentator(
                 training_state.seg, training_state.loss, batch, context.device, training_state.optimizers["seg"], training_state.weights["seg"], training=False)
             interp_output, loss_interp = run_interpolator(training_state.interp, training_state.loss, batch, context.device, training_state.optimizers["interp"], training_state.weights["interp"], training=False)
+            synth_output, loss_synth = run_synthesizer(
+                training_state.synth,
+                training_state.loss,
+                batch,
+                context.device,
+                training_state.optimizers["synth"],
+                weights=training_state.weights["synth"],
+                training=False
+            )
+
+            outputs = {
+                    "seg": seg_output,
+                    "interp": interp_output,
+                    "synth": synth_output,
+                    }
 
             total_loss_seg += loss_seg
             total_loss_interp += loss_interp
@@ -43,7 +58,7 @@ def validate(
             dice_interp = dice_score_multiclass(interp_output, labels[1])
             total_dice_interp += dice_interp
 
-            visualization.samples_comparison(context, images, labels, seg_output, interp_output, global_step, tag="val_samples")
+            visualization.samples_comparison(context, images, labels, outputs,  global_step, tag="val_samples")
 
     avg_loss_seg = total_loss_seg / n_batches
     avg_loss_interp = total_loss_interp / n_batches

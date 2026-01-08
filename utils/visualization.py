@@ -63,6 +63,13 @@ def _denormalize(tensor):
     """Brings a [-1, 1] tensor to [0, 1] for visualization."""
     return torch.clamp((tensor + 1.0) / 2.0, 0, 1)
 
+def preprocess(img_tensor, is_input_img=False, size=(128, 128)):
+    img = _to_3ch(img_tensor.detach().cpu())[0]
+    if is_input_img:
+        img = _denormalize(img)
+    return TF.resize(img, size, interpolation=TF.InterpolationMode.NEAREST)
+
+
 def samples_comparison(
     context,
     gt_images,
@@ -80,21 +87,15 @@ def samples_comparison(
         return
 
     try:
-        def preprocess(img_tensor, is_input_img=False, size=(256, 256)):
-            img = _to_3ch(img_tensor.detach().cpu())[0]
-            if is_input_img:
-                img = _denormalize(img)
-            return TF.resize(img, size, interpolation=TF.InterpolationMode.NEAREST)
-
         row_gt_img = [preprocess(img, True) for img in gt_images]
         row_gt_lbl = [preprocess(handle_visualization_labels(lbl)) for lbl in gt_labels]
         row_seg    = [preprocess(seg_to_rgb.seg_to_rgb(lbl.detach())) for lbl in outputs["seg"]]
 
         interp_img = preprocess(seg_to_rgb.seg_to_rgb(outputs["interp"].detach()))
-        empty      = torch.zeros_like(interp_img)
-        row_interp = [empty, interp_img, empty]
 
-        # row_synth = [preprocess(_denormalize(syn.detach())) for syn in outputs.get("synth", [])]
+        synth_img = preprocess(outputs["synth"].detach())
+        empty      = torch.zeros_like(interp_img)
+        row_interp = [interp_img, synth_img, empty]
 
 
         all_images = row_gt_img + row_gt_lbl + row_seg + row_interp
@@ -102,7 +103,7 @@ def samples_comparison(
             "GT_IMG_0", "GT_IMG_1", "GT_IMG_2",
             "GT_LBL_0", "GT_LBL_1", "GT_LBL_2",
             "SEG_0",    "SEG_1",    "SEG_2",
-            "",   "INTERP",   ""
+            "INTERP",   "SYNTH",    "",
         ]
 
         labeled_images = []

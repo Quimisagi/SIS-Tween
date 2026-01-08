@@ -145,7 +145,6 @@ def _synthesizer_step(
     loss_perceptual = loss_fn.perceptual(generated, target)
 
 
-
     if weights is not None:
         loss_perceptual = loss_perceptual * weights.get("perceptual", 1.0)
 
@@ -188,7 +187,5 @@ def run_synthesizer(
     if training:
         loss_val.backward()
         optimizer.step()
-
-
 
     return generated, loss_val.item()

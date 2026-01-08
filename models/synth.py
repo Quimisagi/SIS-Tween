@@ -215,7 +215,8 @@ class Synthesizer(nn.Module):
     def encode(self, images):
         with torch.no_grad():
             latent_dist = self.vae.encode(images).latent_dist
-            z = latent_dist.sample()    # [B, 4, 32, 32]
+            latents = latent_dist.sample()    # [B, 4, 32, 32]
+            z = latents * 0.18215
             return z
 
     def forward(self, frame1, frame2, segmap):
