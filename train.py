@@ -1,6 +1,6 @@
 import os
-import yaml
 import argparse
+import yaml
 import torch.nn as nn
 from pathlib import Path
 from diffusers import AutoencoderKL
@@ -8,7 +8,7 @@ from diffusers import AutoencoderKL
 from data.triplet_dataset import TripletDataset
 from utils import distributed_gpu, visualization, TrainConfig
 import engine.setup as setup
-from engine import train_loop, losses, RuntimeContext, DataloaderBundle, TrainingState
+from engine import train_loop, losses, Trainer, RuntimeContext, DataloaderBundle, TrainingState
 from models import Interpolator, Segmentator, Synthesizer
 from logs.logger import init_logger
 
@@ -104,45 +104,34 @@ def train_fn(cfg, args):
     }).to(device)
 
     loss = losses.MultitaskLoss(
-        seg_loss=seg_loss,
-        interp_loss=interp_loss,
-        synth_loss=synth_loss,
+        seg=seg_loss,
+        interp=interp_loss,
+        synth=synth_loss,
     )
 
-    optimizers, schedulers = setup.create_optimizers(
-            {"seg": seg, "interp": interp, "synth": synthesizer},
-        lr_seg=1e-4,
-        lr_interp=1e-4,
-    )
 
     # ---- TensorBoard (rank 0 only) ----
     writer = visualization.init_tensorboard(cfg, local_rank)
 
     # ---- Train ----
     logger.info("Starting training...")
-    context_bundle = RuntimeContext(
+    context = RuntimeContext(
         device=device,
         writer=writer,
         logger=logger,
     )
-    training_state = TrainingState(
-        loss=loss,
-        optimizers=optimizers,
-        schedulers=schedulers,
-        seg=seg,
-        interp=interp,
-        synth=synthesizer
+    dataloaders = DataloaderBundle(
+            train=dataloader_train,
+            val=dataloader_val,
+        )
+    trainer = Trainer(
+        loss_fn=loss,
+        dataloaders=dataloaders,
+        cfg=cfg,
+        context=context,
     )
-    dataloader_bundle = DataloaderBundle(
-        train=dataloader_train,
-        val=dataloader_val,
-    )
-    train_loop(
-        training_state,
-        context_bundle,
-        dataloader_bundle,
-        cfg,
-    )
+
+    trainer.train()
 
     dist.destroy_process_group()
 

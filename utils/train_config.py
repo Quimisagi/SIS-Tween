@@ -14,5 +14,8 @@ class TrainConfig:
     epochs: int = 50
     num_seg_classes: int = 6
     autoencoder_path: str = ""
+    lr_seg: float = 1e-4
+    lr_interp: float = 1e-4
+    lr_synth: float = 1e-4
 
 

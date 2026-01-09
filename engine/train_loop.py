@@ -25,13 +25,6 @@ def relative_improvement_window(
 
     return (old - new) / max(abs(old), eps)
 
-def _make_batch(data):
-    return Batch(
-        images=data["images"],
-        labels=data["labels"],
-    )
-
-
 def _forward_seg(
     training_state: TrainingState,
     batch: Batch,

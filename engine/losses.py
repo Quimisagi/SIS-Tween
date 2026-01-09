@@ -17,12 +17,12 @@ class MulticlassDiceLoss(BaseLoss):
         self.eps = eps
         self.ignore_bg = ignore_bg
 
-    def forward(self, logits: torch.Tensor, target: torch.Tensor):
+    def forward(self, pred: torch.Tensor, target: torch.Tensor):
         """
-        logits: (B, C, H, W)
+        pred: (B, C, H, W)
         target: (B, C, H, W) one-hot
         """
-        probs = F.softmax(logits, dim=1)
+        probs = F.softmax(pred, dim=1)
 
         B, C = probs.shape[:2]
         probs = probs.view(B, C, -1)
@@ -48,14 +48,14 @@ class CrossEntropyLoss(BaseLoss):
         self.weight = weight
         self.reduction = reduction
 
-    def forward(self, logits: torch.Tensor, targets: torch.Tensor):
+    def forward(self, pred: torch.Tensor, target: torch.Tensor):
         """
-        logits:  (B, C, H, W)
-        targets: (B, H, W)
+        pred:  (B, C, H, W)
+        target: (B, H, W)
         """
         loss = F.cross_entropy(
-            logits,
-            targets,
+            pred,
+            target,
             weight=self.weight,
             reduction=self.reduction,
         )
@@ -74,9 +74,9 @@ class FocalLoss(BaseLoss):
         self.weight = weight
         self.reduction = reduction
 
-    def forward(self, logits: torch.Tensor, targets: torch.Tensor):
+    def forward(self, pred: torch.Tensor, targets: torch.Tensor):
         ce = F.cross_entropy(
-            logits,
+            pred,
             targets,
             weight=self.weight,
             reduction="none",
@@ -121,15 +121,15 @@ class PerceptualLoss(BaseLoss):
     def normalize(self, x: torch.Tensor):
         return (x - self.mean) / self.std
 
-    def forward(self, x: torch.Tensor, y: torch.Tensor):
+    def forward(self, pred: torch.Tensor, target: torch.Tensor):
         """
-        x, y: (B, 3, H, W) in [0,1]
+        pred, target: (B, 3, H, W) in [0,1]
         """
-        x = self.normalize(x)
-        y = self.normalize(y)
+        pred = self.normalize(pred)
+        target = self.normalize(target)
 
-        fx = self.vgg(x)
-        fy = self.vgg(y)
+        fx = self.vgg(pred)
+        fy = self.vgg(target)
 
         loss = F.l1_loss(fx, fy)
         return loss, {"perceptual": loss}
@@ -150,14 +150,18 @@ class CompositeLoss(BaseLoss):
         }
 
     def forward(self, **inputs):
-        total = torch.tensor(0.0, device=next(self.parameters()).device)
+        total = None
         metrics = {}
 
         for name, loss_fn in self.losses.items():
             loss_value, loss_metrics = loss_fn(**inputs)
 
             weighted = self.weights[name] * loss_value
-            total = total + weighted
+
+            if total is None:
+                total = weighted
+            else:
+                total = total + weighted
 
             metrics[f"{name}/loss"] = loss_value.detach()
             for k, v in loss_metrics.items():
@@ -177,7 +181,7 @@ class MultitaskLoss(BaseLoss):
         self.tasks = nn.ModuleDict(tasks)
 
     def forward(self, batch: dict):
-        total = torch.tensor(0.0, device=next(self.parameters()).device)
+        total = None
         metrics = {}
 
         for name, loss_fn in self.tasks.items():
@@ -185,7 +189,11 @@ class MultitaskLoss(BaseLoss):
                 continue
 
             loss_value, task_metrics = loss_fn(**batch[name])
-            total = total + loss_value
+
+            if total is None:
+                total = loss_value
+            else:
+                total = total + loss_value
 
             metrics[f"{name}/total"] = loss_value.detach()
             for k, v in task_metrics.items():
