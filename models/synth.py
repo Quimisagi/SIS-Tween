@@ -16,9 +16,10 @@ from dataclasses import dataclass
 # Config
 # ============================================================
 
+
 @dataclass
 class SPADEConfig:
-    semantic_nc: int 
+    semantic_nc: int
     ngf: int = 64
     z_dim: int = 256
     crop_size: int = 256
@@ -29,6 +30,7 @@ class SPADEConfig:
 # ============================================================
 # SPADE Normalization
 # ============================================================
+
 
 class SPADE(nn.Module):
     def __init__(self, norm_nc, label_nc):
@@ -59,6 +61,7 @@ class SPADE(nn.Module):
 # ============================================================
 # SPADE ResNet Block
 # ============================================================
+
 
 class SPADEResnetBlock(nn.Module):
     def __init__(self, fin, fout, config: SPADEConfig):
@@ -95,6 +98,7 @@ class SPADEResnetBlock(nn.Module):
 # SPADE Generator
 # ============================================================
 
+
 class SPADEGenerator(nn.Module):
     def __init__(self, config: SPADEConfig):
         super().__init__()
@@ -104,9 +108,7 @@ class SPADEGenerator(nn.Module):
         self.sw, self.sh = self._compute_latent_vector_size()
 
         # --- VAE latent projection (MANDATORY) ---
-        self.fc = nn.Linear(
-            config.z_dim, 16 * nf * self.sw * self.sh
-        )
+        self.fc = nn.Linear(config.z_dim, 16 * nf * self.sw * self.sh)
 
         self.head_0 = SPADEResnetBlock(16 * nf, 16 * nf, config)
 
@@ -138,7 +140,7 @@ class SPADEGenerator(nn.Module):
         else:
             raise ValueError("Invalid num_upsampling_layers")
 
-        sw = self.config.crop_size // (2 ** num_up)
+        sw = self.config.crop_size // (2**num_up)
         sh = round(sw / self.config.aspect_ratio)
         return sw, sh
 
@@ -154,9 +156,7 @@ class SPADEGenerator(nn.Module):
             raise ValueError("latent_z is required (VAE-only generator)")
 
         x = self.fc(latent_z)
-        x = x.view(
-            -1, 16 * self.config.ngf, self.sh, self.sw
-        )
+        x = x.view(-1, 16 * self.config.ngf, self.sh, self.sw)
 
         x = self.head_0(x, segmap)
 
@@ -184,6 +184,7 @@ class SPADEGenerator(nn.Module):
         x = torch.tanh(self.conv_img(F.leaky_relu(x, 0.2)))
         return x
 
+
 class Synthesizer(nn.Module):
     def __init__(self, vae, image_size=128):
         super().__init__()
@@ -195,7 +196,7 @@ class Synthesizer(nn.Module):
 
         # ---- Diffusers VAE latent size ----
         self.latent_channels = vae.config.latent_channels  # usually 4
-        self.latent_hw = image_size // 8                    # usually 32
+        self.latent_hw = image_size // 8  # usually 32
         self.vae_z_dim = self.latent_channels * self.latent_hw * self.latent_hw
 
         self.spade_z_dim = 128
@@ -215,7 +216,7 @@ class Synthesizer(nn.Module):
     def encode(self, images):
         with torch.no_grad():
             latent_dist = self.vae.encode(images).latent_dist
-            latents = latent_dist.sample()    # [B, 4, 32, 32]
+            latents = latent_dist.sample()  # [B, 4, 32, 32]
             z = latents * 0.18215
             return z
 

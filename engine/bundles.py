@@ -10,6 +10,7 @@ class RuntimeContext:
     writer: Any
     logger: Any
 
+
 @dataclass
 class TrainingState:
     loss: Any
@@ -18,11 +19,13 @@ class TrainingState:
     seg: nn.Module
     interp: nn.Module
     synth: nn.Module
-    
+
+
 @dataclass
 class Batch:
     images: List[torch.Tensor]
     labels: List[torch.Tensor]
+
 
 @dataclass
 class DataloaderBundle:

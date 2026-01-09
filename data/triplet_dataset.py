@@ -7,7 +7,14 @@ from .dataset_base import DatasetBase
 
 
 class TripletDataset(Dataset):
-    def __init__(self, root_dir, mode="train", image_transform=None, label_transform=None, apply_augmentation=False):
+    def __init__(
+        self,
+        root_dir,
+        mode="train",
+        image_transform=None,
+        label_transform=None,
+        apply_augmentation=False,
+    ):
         self.loader = DatasetBase(root_dir, mode)
         self.image_transform = image_transform or transforms.ToTensor()
         self.label_transform = label_transform or transforms.ToTensor()
@@ -36,7 +43,7 @@ class TripletDataset(Dataset):
 
         return {
             "basename": [s["basename"] for s in samples],
-            "images": images, 
+            "images": images,
             "labels": labels,
         }
 

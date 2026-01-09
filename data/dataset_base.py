@@ -1,6 +1,7 @@
 import os
 from PIL import Image
 
+
 class DatasetBase:
     def __init__(self, root_dir, mode="train"):
         self.root_dir = root_dir
@@ -46,11 +47,13 @@ class DatasetBase:
                 lbl_files = sorted(os.listdir(lbl_dir))
 
                 for img_f, lbl_f in zip(img_files, lbl_files):
-                    samples.append((
-                        os.path.join(img_dir, img_f),
-                        os.path.join(lbl_dir, lbl_f),
-                        f"{split}/{seq}"
-                    ))
+                    samples.append(
+                        (
+                            os.path.join(img_dir, img_f),
+                            os.path.join(lbl_dir, lbl_f),
+                            f"{split}/{seq}",
+                        )
+                    )
 
         return samples
 

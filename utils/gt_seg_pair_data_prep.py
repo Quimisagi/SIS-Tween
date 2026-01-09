@@ -19,7 +19,7 @@ def ensure_dir(path: Path):
 
 def make_unique_filename(rel_path: Path):
     """
-    Convert relative path into a unique filename by replacing 
+    Convert relative path into a unique filename by replacing
     directory separators with underscores.
     Example:
         humans/set1/img001.png → humans_set1_img001.png

@@ -1,19 +1,24 @@
 import torch
 
-PALETTE = torch.tensor([
-    [1,   1,   1],     # BACKGROUND
-    [255, 0,   255],   # HAIR
-    [255, 246, 1],     # FACE
-    [255, 255, 255],   # EYE
-    # [255, 1,   1],     # MOUTH
-    [255, 201, 99],    # SKIN
-    [0,   255, 0],     # CLOTHES
-], dtype=torch.uint8)  # (6, 3)
+PALETTE = torch.tensor(
+    [
+        [1, 1, 1],  # BACKGROUND
+        [255, 0, 255],  # HAIR
+        [255, 246, 1],  # FACE
+        [255, 255, 255],  # EYE
+        # [255, 1,   1],     # MOUTH
+        [255, 201, 99],  # SKIN
+        [0, 255, 0],  # CLOTHES
+    ],
+    dtype=torch.uint8,
+)  # (6, 3)
 
 
 def seg_to_rgb(seg: torch.Tensor) -> torch.Tensor:
     B, C, H, W = seg.shape
-    assert C == PALETTE.shape[0], f"Expected {PALETTE.shape[0]} channels for segmentation input, got {C}"
+    assert (
+        C == PALETTE.shape[0]
+    ), f"Expected {PALETTE.shape[0]} channels for segmentation input, got {C}"
 
     # Flatten segmentation to (B, H*W, C)
     seg_flat = seg.permute(0, 2, 3, 1).reshape(B, -1, C)

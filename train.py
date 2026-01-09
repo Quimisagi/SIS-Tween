@@ -14,11 +14,10 @@ from logs.logger import init_logger
 
 import torch.distributed as dist
 
+
 def is_dist():
-    return (
-        "RANK" in os.environ and
-        "WORLD_SIZE" in os.environ
-    )
+    return "RANK" in os.environ and "WORLD_SIZE" in os.environ
+
 
 def train_fn(cfg, args):
 
@@ -91,24 +90,29 @@ def train_fn(cfg, args):
         seg = nn.parallel.DistributedDataParallel(seg, device_ids=[local_rank])
 
     # ---- Loss / Optimizers ----
-    seg_loss = losses.CompositeLoss({
-        "dice": (losses.MulticlassDiceLoss().to(device), 1.0),
-        "ce":   (losses.CrossEntropyLoss().to(device), 1.0),
-    }).to(device)
-    interp_loss = losses.CompositeLoss({
-        "dice": (losses.MulticlassDiceLoss().to(device), 1.0),
-        "ce":   (losses.CrossEntropyLoss().to(device), 1.0),
-    }).to(device)
-    synth_loss = losses.CompositeLoss({
-        "perceptual": (losses.PerceptualLoss().to(device), 1.0),
-    }).to(device)
+    seg_loss = losses.CompositeLoss(
+        {
+            "dice": (losses.MulticlassDiceLoss().to(device), 1.0),
+            "ce": (losses.CrossEntropyLoss().to(device), 1.0),
+        }
+    ).to(device)
+    interp_loss = losses.CompositeLoss(
+        {
+            "dice": (losses.MulticlassDiceLoss().to(device), 1.0),
+            "ce": (losses.CrossEntropyLoss().to(device), 1.0),
+        }
+    ).to(device)
+    synth_loss = losses.CompositeLoss(
+        {
+            "perceptual": (losses.PerceptualLoss().to(device), 1.0),
+        }
+    ).to(device)
 
     loss = losses.MultitaskLoss(
         seg=seg_loss,
         interp=interp_loss,
         synth=synth_loss,
     )
-
 
     # ---- TensorBoard (rank 0 only) ----
     writer = visualization.init_tensorboard(cfg, local_rank)
@@ -121,9 +125,9 @@ def train_fn(cfg, args):
         logger=logger,
     )
     dataloaders = DataloaderBundle(
-            train=dataloader_train,
-            val=dataloader_val,
-        )
+        train=dataloader_train,
+        val=dataloader_val,
+    )
     trainer = Trainer(
         loss_fn=loss,
         dataloaders=dataloaders,
@@ -135,19 +139,23 @@ def train_fn(cfg, args):
 
     dist.destroy_process_group()
 
+
 def main():
     parser = argparse.ArgumentParser(description="Train SIS_Tween")
     parser.add_argument("--config", type=str, default="configuration.yaml")
     parser.add_argument("--dataset_path", required=True)
     args = parser.parse_args()
 
-    assert Path(args.dataset_path).exists(), f"Dataset path {args.dataset_path} does not exist."
+    assert Path(
+        args.dataset_path
+    ).exists(), f"Dataset path {args.dataset_path} does not exist."
     assert Path(args.config).exists(), f"Config file {args.config} does not exist."
 
     with open(args.config) as f:
         cfg = TrainConfig(**yaml.safe_load(f))
 
     train_fn(cfg, args)
+
 
 if __name__ == "__main__":
     main()

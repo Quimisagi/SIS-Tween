@@ -3,7 +3,7 @@ from diffusers import AutoencoderKL
 import torch
 from torch.utils.data import DistributedSampler
 from utils import visualization
-from .bundles import RuntimeContext,Batch, DataloaderBundle, TrainingState
+from .bundles import RuntimeContext, Batch, DataloaderBundle, TrainingState
 from .training_steps import run_segmentator, run_interpolator, run_synthesizer
 from collections import deque
 from utils import TrainConfig
@@ -21,9 +21,7 @@ class Trainer:
 
         # models
         self.seg = Segmentator(num_seg_classes=cfg.num_seg_classes).to(self.device)
-        self.interp = Interpolator(
-            sem_c=cfg.num_seg_classes, base_c=64
-        ).to(self.device)
+        self.interp = Interpolator(sem_c=cfg.num_seg_classes, base_c=64).to(self.device)
 
         vae = AutoencoderKL.from_single_file(cfg.autoencoder_path)
         self.synth = Synthesizer(vae).to(self.device)
@@ -37,7 +35,9 @@ class Trainer:
 
         self.schedulers = {
             "seg": torch.optim.lr_scheduler.StepLR(self.optimizers["seg"], 10, 0.1),
-            "interp": torch.optim.lr_scheduler.StepLR(self.optimizers["interp"], 10, 0.1),
+            "interp": torch.optim.lr_scheduler.StepLR(
+                self.optimizers["interp"], 10, 0.1
+            ),
             "synth": torch.optim.lr_scheduler.StepLR(self.optimizers["synth"], 10, 0.1),
         }
 
@@ -69,7 +69,6 @@ class Trainer:
 
     def replace_labels_with_segmentation(self, batch: Batch, seg_output):
         batch.labels = [seg.detach().argmax(dim=1) for seg in seg_output]
-
 
     def forward_seg(self, batch, optimizer=None, require_grad=True):
         return run_segmentator(
@@ -173,9 +172,7 @@ class Trainer:
         for data in self.dataloaders.train:
             batch = self.make_batch(data)
 
-            seg_out, _ = self.forward_seg(
-                batch, require_grad=False
-            )
+            seg_out, _ = self.forward_seg(batch, require_grad=False)
 
             self.replace_labels_with_segmentation(batch, seg_out)
 
@@ -208,8 +205,7 @@ class Trainer:
             interp_out, loss_interp = self.forward_interp(batch, optimizer=None)
 
             total_loss = (
-                self.cfg.seg_weight * loss_seg
-                + self.cfg.interp_weight * loss_interp
+                self.cfg.seg_weight * loss_seg + self.cfg.interp_weight * loss_interp
             )
 
             total_loss.backward()
@@ -226,7 +222,6 @@ class Trainer:
             )
 
             self.global_step += 1
-
 
     def _log_validation(
         self,
@@ -382,4 +377,3 @@ class Trainer:
                     ri = self.relative_improvement(interp_val_history)
                     if ri < 0.01:
                         self.train_stage = 2
-

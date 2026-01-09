@@ -9,6 +9,7 @@ import torch.nn.functional as F
 # Utils
 # -----------------------------
 
+
 def prepare_label(label, device, num_classes: int):
     label = label.to(device)
     return (
@@ -17,10 +18,12 @@ def prepare_label(label, device, num_classes: int):
         .float()
     )
 
+
 def prepare_interp_input(label, image, device, num_classes: int):
     label = prepare_label(label, device, num_classes)
     image = image.to(device)
     return torch.cat([image, label], dim=1)
+
 
 def prepare_synth_inputs(batch, device, num_classes: int):
     label = prepare_label(batch.labels[1], device, num_classes)
@@ -28,9 +31,11 @@ def prepare_synth_inputs(batch, device, num_classes: int):
     image2 = batch.images[2].to(device)
     return label, image0, image2
 
+
 # -----------------------------
 # Segmentator
 # -----------------------------
+
 
 def segmentator_step(
     model,
@@ -70,7 +75,6 @@ def run_segmentator(
 ):
     model.train(training)
 
-
     grad_ctx = torch.enable_grad() if training else torch.no_grad()
 
     outputs = []
@@ -81,9 +85,7 @@ def run_segmentator(
             if training and optimizer is not None:
                 optimizer.zero_grad(set_to_none=True)
 
-            out, loss = segmentator_step(
-                model, loss_fn, img, lbl, device, num_classes
-            )
+            out, loss = segmentator_step(model, loss_fn, img, lbl, device, num_classes)
 
             if training and optimizer is not None:
                 loss.backward()
@@ -98,6 +100,7 @@ def run_segmentator(
 # -----------------------------
 # Interpolator
 # -----------------------------
+
 
 def interpolator_step(
     model,
@@ -146,9 +149,7 @@ def run_interpolator(
         if training and optimizer is not None:
             optimizer.zero_grad(set_to_none=True)
 
-        output, loss = interpolator_step(
-            model, loss_fn, batch, device, num_classes
-        )
+        output, loss = interpolator_step(model, loss_fn, batch, device, num_classes)
 
         if training and optimizer is not None:
             loss.backward()
@@ -160,6 +161,7 @@ def run_interpolator(
 # -----------------------------
 # Synthesizer
 # -----------------------------
+
 
 def synthesizer_step(
     model,
@@ -185,6 +187,7 @@ def synthesizer_step(
     assert torch.isfinite(loss)
     return output, loss
 
+
 def run_synthesizer(
     model,
     loss_fn,
@@ -202,9 +205,7 @@ def run_synthesizer(
         if training and optimizer is not None:
             optimizer.zero_grad(set_to_none=True)
 
-        output, loss = synthesizer_step(
-            model, loss_fn, batch, device, num_classes
-        )
+        output, loss = synthesizer_step(model, loss_fn, batch, device, num_classes)
 
         if training and optimizer is not None:
             loss.backward()

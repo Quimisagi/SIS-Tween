@@ -4,12 +4,15 @@ import torch.nn.functional as F
 from torchvision import models
 from torchvision.models import VGG19_Weights
 
+
 class BaseLoss(nn.Module):
     """
     Contract:
         forward(...) -> (loss: Tensor, metrics: dict[str, Tensor])
     """
+
     pass
+
 
 class MulticlassDiceLoss(BaseLoss):
     def __init__(self, eps: float = 1e-6, ignore_bg: bool = False):
@@ -100,9 +103,7 @@ class FocalLoss(BaseLoss):
 class PerceptualLoss(BaseLoss):
     def __init__(self):
         super().__init__()
-        self.vgg = models.vgg19(
-            weights=VGG19_Weights.IMAGENET1K_V1
-        ).features[:36]
+        self.vgg = models.vgg19(weights=VGG19_Weights.IMAGENET1K_V1).features[:36]
         self.vgg.eval()
 
         for p in self.vgg.parameters():
@@ -142,12 +143,8 @@ class CompositeLoss(BaseLoss):
             name -> (loss_module, weight)
         """
         super().__init__()
-        self.losses = nn.ModuleDict({
-            name: loss for name, (loss, _) in losses.items()
-        })
-        self.weights = {
-            name: weight for name, (_, weight) in losses.items()
-        }
+        self.losses = nn.ModuleDict({name: loss for name, (loss, _) in losses.items()})
+        self.weights = {name: weight for name, (_, weight) in losses.items()}
 
     def forward(self, **inputs):
         total = None
@@ -168,6 +165,7 @@ class CompositeLoss(BaseLoss):
                 metrics[f"{name}/{k}"] = v.detach()
 
         return total, metrics
+
 
 class MultitaskLoss(BaseLoss):
     def __init__(self, **tasks: BaseLoss):

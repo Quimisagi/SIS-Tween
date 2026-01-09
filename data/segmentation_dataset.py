@@ -7,7 +7,9 @@ from .dataset_base import DatasetBase
 
 
 class SegmentationDataset(Dataset):
-    def __init__(self, root_dir, mode="train", transform=None, apply_augmentation=False):
+    def __init__(
+        self, root_dir, mode="train", transform=None, apply_augmentation=False
+    ):
         self.loader = DatasetBase(root_dir, mode)
         self.transform = transform or transforms.ToTensor()
         self.apply_augmentation = apply_augmentation
