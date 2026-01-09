@@ -46,7 +46,6 @@ def _forward_seg(
             batch,
             device,
             optimizer,
-            training_state.weights["seg"],
         )
     else:
         with torch.no_grad():
@@ -56,7 +55,6 @@ def _forward_seg(
                 batch,
                 device,
                 optimizer=None,
-                weights=training_state.weights["seg"],
             )
 
 
@@ -72,7 +70,6 @@ def _forward_interp(
         batch,
         device,
         optimizer,
-        training_state.weights["interp"],
     )
 
 def _forward_synth(
@@ -87,7 +84,6 @@ def _forward_synth(
         batch,
         device,
         optimizer,
-        weights=training_state.weights["synth"],
     )
 
 

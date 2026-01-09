@@ -13,7 +13,6 @@ class RuntimeContext:
 @dataclass
 class TrainingState:
     loss: Any
-    weights: dict
     optimizers: dict
     schedulers: dict
     seg: nn.Module

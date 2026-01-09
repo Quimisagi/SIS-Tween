@@ -19,7 +19,7 @@ def _prepare_synth_input(batch, device, num_classes=6):
     image2 = batch.images[2].to(device)
     return label, image0, image2
 
-def _segmentator_step(seg, loss_fn, image, label, device, weights=None):
+def _segmentator_step(seg, loss_fn, image, label, device):
     seg_img = image.to(device)
     seg_label = _prepare_label(label, device)
 
@@ -49,7 +49,6 @@ def run_segmentator(
     batch,
     device,
     optimizer,
-    weights,
     training: bool = True,
 ):
     generated = []
@@ -79,7 +78,7 @@ def run_segmentator(
 
     return generated, total_loss / len(batch.images)
 
-def _interpolator_step(interp, loss_fn, batch, device, weights=None, num_classes=6):
+def _interpolator_step(interp, loss_fn, batch, device, num_classes=6):
     input_a = _prepare_interp_input(batch.labels[0], batch.images[0], device, num_classes)
     input_b = _prepare_interp_input(batch.labels[2], batch.images[2], device, num_classes)
     target = _prepare_label(batch.labels[1], device)
@@ -107,7 +106,6 @@ def run_interpolator(
     batch,
     device,
     optimizer,
-    weights,
     training: bool = True,
 ):
     if training:
@@ -136,7 +134,6 @@ def _synthesizer_step(
     batch,
     device,
     num_classes=6,
-    weights=None,
 ):
     label, image0, image2 = _prepare_synth_input(batch, device, num_classes)
 
@@ -161,7 +158,6 @@ def run_synthesizer(
     batch,
     device,
     optimizer,
-    weights,
     training: bool = True,
     num_classes: int = 6,
 ):

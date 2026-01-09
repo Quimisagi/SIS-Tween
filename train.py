@@ -8,7 +8,7 @@ from diffusers import AutoencoderKL
 from data.triplet_dataset import TripletDataset
 from utils import distributed_gpu, visualization, TrainConfig
 import engine.setup as setup
-from engine import train_loop, Loss, RuntimeContext, DataloaderBundle, TrainingState
+from engine import train_loop, losses, RuntimeContext, DataloaderBundle, TrainingState
 from models import Interpolator, Segmentator, Synthesizer
 from logs.logger import init_logger
 
@@ -91,15 +91,29 @@ def train_fn(cfg, args):
         seg = nn.parallel.DistributedDataParallel(seg, device_ids=[local_rank])
 
     # ---- Loss / Optimizers ----
-    loss = Loss(device)
+    seg_loss = losses.CompositeLoss({
+        "dice": (losses.MulticlassDiceLoss().to(device), 1.0),
+        "ce":   (losses.CrossEntropyLoss().to(device), 1.0),
+    }).to(device)
+    interp_loss = losses.CompositeLoss({
+        "dice": (losses.MulticlassDiceLoss().to(device), 1.0),
+        "ce":   (losses.CrossEntropyLoss().to(device), 1.0),
+    }).to(device)
+    synth_loss = losses.CompositeLoss({
+        "perceptual": (losses.PerceptualLoss().to(device), 1.0),
+    }).to(device)
+
+    loss = losses.MultitaskLoss(
+        seg_loss=seg_loss,
+        interp_loss=interp_loss,
+        synth_loss=synth_loss,
+    )
 
     optimizers, schedulers = setup.create_optimizers(
             {"seg": seg, "interp": interp, "synth": synthesizer},
         lr_seg=1e-4,
         lr_interp=1e-4,
     )
-
-    weights = setup.create_weights()
 
     # ---- TensorBoard (rank 0 only) ----
     writer = visualization.init_tensorboard(cfg, local_rank)
@@ -113,7 +127,6 @@ def train_fn(cfg, args):
     )
     training_state = TrainingState(
         loss=loss,
-        weights=weights,
         optimizers=optimizers,
         schedulers=schedulers,
         seg=seg,

@@ -69,8 +69,8 @@ def preprocess(img_tensor, is_input_img=False, size=(128, 128)):
         img = _denormalize(img)
     return TF.resize(img, size, interpolation=TF.InterpolationMode.NEAREST)
 
-
 def samples_comparison(
+
     context,
     gt_images,
     gt_labels,
