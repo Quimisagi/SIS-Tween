@@ -248,8 +248,8 @@ class Trainer:
             visualization.plot(
                 self.context,
                 {
-                    "segmentation_dice": avg_dice_seg,
-                    "interpolation_dice": avg_dice_interp,
+                    "segmentation": avg_dice_seg,
+                    "interpolation": avg_dice_interp,
                 },
                 self.global_step,
                 tag="dice",
@@ -328,7 +328,7 @@ class Trainer:
 
                 # Dice (interpolation)
                 total_dice_interp += dice_score_multiclass(
-                    interp_out, batch.labels[1]
+                    interp_out, batch.labels[1].squeeze(1).long()
                 )
 
                 if self.context.writer:

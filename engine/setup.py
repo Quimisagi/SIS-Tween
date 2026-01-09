@@ -25,16 +25,3 @@ def create_transforms(image_size):
 
     return image_transform, label_transform
 
-def create_optimizers(models, lr_seg=1e-4, lr_interp=1e-4):
-    optimizers = {
-        'seg': torch.optim.Adam(models['seg'].parameters(), lr=lr_seg),
-        'interp': torch.optim.Adam(models['interp'].parameters(), lr=lr_interp),
-        'synth': torch.optim.Adam(models['synth'].parameters(), lr=1e-4),
-    }
-    schedulers = {
-        'seg': torch.optim.lr_scheduler.StepLR(optimizers['seg'], step_size=10, gamma=0.1),
-        'interp': torch.optim.lr_scheduler.StepLR(optimizers['interp'], step_size=10, gamma=0.1),
-        'synth': torch.optim.lr_scheduler.StepLR(optimizers['synth'], step_size=10, gamma=0.1),
-        }
-    return optimizers, schedulers
-

@@ -21,7 +21,7 @@ def dice_score_multiclass(preds, labels, num_classes=None, eps=1e-6):
     if num_classes is None:
         num_classes = preds.shape[1]
 
-    labels.to(preds.device)
+    labels = labels.to(preds.device)
 
     # Convert labels to one-hot
     labels_onehot = F.one_hot(labels, num_classes=num_classes)  # (B, H, W, C)

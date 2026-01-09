@@ -17,19 +17,16 @@ def prepare_label(label, device, num_classes: int):
         .float()
     )
 
-
 def prepare_interp_input(label, image, device, num_classes: int):
     label = prepare_label(label, device, num_classes)
     image = image.to(device)
     return torch.cat([image, label], dim=1)
-
 
 def prepare_synth_inputs(batch, device, num_classes: int):
     label = prepare_label(batch.labels[1], device, num_classes)
     image0 = batch.images[0].to(device)
     image2 = batch.images[2].to(device)
     return label, image0, image2
-
 
 # -----------------------------
 # Segmentator
@@ -48,6 +45,7 @@ def segmentator_step(
 
     output = model(image)
 
+    # MultitaskLoss expects a batch dict
     loss, metrics = loss_fn(
         batch={
             "seg": {
@@ -71,6 +69,7 @@ def run_segmentator(
     num_classes: int = 6,
 ):
     model.train(training)
+
 
     grad_ctx = torch.enable_grad() if training else torch.no_grad()
 
@@ -185,7 +184,6 @@ def synthesizer_step(
 
     assert torch.isfinite(loss)
     return output, loss
-
 
 def run_synthesizer(
     model,
