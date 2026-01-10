@@ -1,27 +1,18 @@
-import os
 import argparse
 import yaml
-import torch.nn as nn
 from pathlib import Path
-from diffusers import AutoencoderKL
+import torch.distributed as dist
 
 from data.triplet_dataset import TripletDataset
 from utils import distributed_gpu, visualization, TrainConfig
 import engine.setup as setup
 from engine import losses, Trainer, RuntimeContext, DataloaderBundle
-from models import Interpolator, Segmentator, Synthesizer
 from logs.logger import init_logger
-
-import torch.distributed as dist
-
-
-def is_dist():
-    return "RANK" in os.environ and "WORLD_SIZE" in os.environ
 
 
 def train_fn(cfg, args):
 
-    if cfg.distributed_enabled and is_dist():
+    if cfg.distributed_enabled and distributed_gpu.is_dist():
         dist.init_process_group(backend="nccl")
 
     if dist.is_initialized():
@@ -77,17 +68,6 @@ def train_fn(cfg, args):
 
     logger.info("Validation Dataset and DataLoader ready")
     logger.debug(f"Validation Dataset size: {len(dataset_val)}")
-
-    # ---- Models ----
-    interp = Interpolator(sem_c=6, base_c=64).to(device)
-    seg = Segmentator().to(device)
-
-    vae = AutoencoderKL.from_single_file(cfg.autoencoder_path).to(device)
-    synthesizer = Synthesizer(vae).to(device)
-
-    if cfg.distributed_enabled and world_size > 1:
-        interp = nn.parallel.DistributedDataParallel(interp, device_ids=[local_rank])
-        seg = nn.parallel.DistributedDataParallel(seg, device_ids=[local_rank])
 
     # ---- Loss / Optimizers ----
     seg_loss = losses.CompositeLoss(

@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 @dataclass
@@ -18,3 +18,4 @@ class TrainConfig:
     lr_seg: float = 1e-4
     lr_interp: float = 1e-4
     lr_synth: float = 1e-4
+    active_models: list = field(default_factory=lambda: ["seg", "interp", "synth"])

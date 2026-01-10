@@ -18,6 +18,10 @@ def setup(rank, world_size):
     dist.init_process_group("nccl", rank=rank, world_size=world_size)
 
 
+def is_dist():
+    return "RANK" in os.environ and "WORLD_SIZE" in os.environ
+
+
 def cleanup():
     dist.destroy_process_group()
 
