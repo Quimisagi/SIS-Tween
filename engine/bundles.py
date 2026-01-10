@@ -7,6 +7,7 @@ import torch.nn as nn
 @dataclass
 class RuntimeContext:
     device: torch.device
+    world_size: int
     writer: Any
     logger: Any
 

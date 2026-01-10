@@ -70,29 +70,32 @@ def train_fn(cfg, args):
     logger.debug(f"Validation Dataset size: {len(dataset_val)}")
 
     # ---- Loss / Optimizers ----
-    seg_loss = losses.CompositeLoss(
-        {
-            "dice": (losses.MulticlassDiceLoss().to(device), 1.0),
-            "ce": (losses.CrossEntropyLoss().to(device), 1.0),
-        }
-    ).to(device)
-    interp_loss = losses.CompositeLoss(
-        {
-            "dice": (losses.MulticlassDiceLoss().to(device), 1.0),
-            "ce": (losses.CrossEntropyLoss().to(device), 1.0),
-        }
-    ).to(device)
-    synth_loss = losses.CompositeLoss(
-        {
-            "perceptual": (losses.PerceptualLoss().to(device), 1.0),
-        }
-    ).to(device)
+    tasks = {}
 
-    loss = losses.MultitaskLoss(
-        seg=seg_loss,
-        interp=interp_loss,
-        synth=synth_loss,
-    )
+    if "seg" in cfg.active_models:
+        tasks["seg"] = losses.CompositeLoss(
+            {
+                "dice": (losses.MulticlassDiceLoss().to(device), 1.0),
+                "ce": (losses.CrossEntropyLoss().to(device), 1.0),
+            }
+        ).to(device)
+
+    if "interp" in cfg.active_models:
+        tasks["interp"] = losses.CompositeLoss(
+            {
+                "dice": (losses.MulticlassDiceLoss().to(device), 1.0),
+                "ce": (losses.CrossEntropyLoss().to(device), 1.0),
+            }
+        ).to(device)
+
+    if "synth" in cfg.active_models:
+        tasks["synth"] = losses.CompositeLoss(
+            {
+                "perceptual": (losses.PerceptualLoss().to(device), 1.0),
+            }
+        ).to(device)
+
+    loss = losses.MultitaskLoss(**tasks)
 
     # ---- TensorBoard (rank 0 only) ----
     writer = visualization.init_tensorboard(cfg, local_rank)
@@ -103,6 +106,7 @@ def train_fn(cfg, args):
         device=device,
         writer=writer,
         logger=logger,
+        world_size=world_size,
     )
     dataloaders = DataloaderBundle(
         train=dataloader_train,

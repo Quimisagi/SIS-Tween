@@ -1,12 +1,13 @@
-from models import Interpolator, Segmentator, Synthesizer
+from torch.nn.parallel import DistributedDataParallel
 from diffusers import AutoencoderKL
 import torch
 from torch.utils.data import DistributedSampler
+
+from models import Interpolator, Segmentator, Synthesizer
 from utils import visualization
-from .bundles import RuntimeContext, Batch, DataloaderBundle, TrainingState
+from .bundles import Batch
 from .training_steps import run_segmentator, run_interpolator, run_synthesizer
 from collections import deque
-from utils import TrainConfig
 from utils.dice_score import dice_score_multiclass
 
 
@@ -35,6 +36,20 @@ class Trainer:
             if "synth" in cfg.active_models
             else None
         )
+
+        if cfg.distributed_enabled and context.world_size > 1:
+            if self.seg:
+                self.seg = DistributedDataParallel(
+                    self.seg, device_ids=[cfg.local_rank]
+                )
+            if self.interp:
+                self.interp = DistributedDataParallel(
+                    self.interp, device_ids=[cfg.local_rank]
+                )
+            if self.synth:
+                self.synth = DistributedDataParallel(
+                    self.synth, device_ids=[cfg.local_rank]
+                )
 
         self.optimizers = {}
         if self.seg:
@@ -69,9 +84,18 @@ class Trainer:
         self.train_stage = 0
 
     def make_batch(self, data):
+        """
+        data: dict with keys "images" and "labels"
+        """
         return Batch(images=data["images"], labels=data["labels"])
 
     def relative_improvement(self, values, eps: float = 1e-8) -> float:
+        """
+        Computes the relative improvement between the first and last values in a list.
+        Used to determine when to switch training stages.
+        values: list of float
+        returns: (old - new) / max(|old|, eps)
+        """
         if len(values) < 2:
             return 0.0
         old = values[0]
@@ -99,7 +123,9 @@ class Trainer:
     def forward_synth(self, batch, optimizer=None):
         if not self.synth:
             return None, 0.0
-        return run_synthesizer(self.synth, self.loss_fn, batch, self.device, optimizer)
+        return run_synthesizer(
+                self.synth, self.loss_fn, batch, self.device, optimizer
+        )
 
     def log_step(self, stage, losses, batch=None, outputs=None):
         if not self.context.writer or self.global_step % 100 != 0:
