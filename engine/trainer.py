@@ -279,12 +279,12 @@ class Trainer:
                 outputs = {"seg": seg_out, "interp": interp_out, "synth": synth_out}
                 total_loss_seg += loss_seg
                 total_loss_interp += loss_interp
-                if seg_out:
+                if seg_out is not None:
                     for i in range(len(seg_out)):
                         pred = seg_out[i].detach()
                         target = batch.labels[i].squeeze(1).long()
                         total_dice_seg += dice_score_multiclass(pred, target)
-                if interp_out:
+                if interp_out is not None:
                     total_dice_interp += dice_score_multiclass(
                         interp_out, batch.labels[1].squeeze(1).long()
                     )
