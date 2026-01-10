@@ -1,6 +1,3 @@
-# See chat explanation for the refactor rationale.
-# This version is Pyright-safe and runtime-safe.
-
 import torch
 import torch.nn.functional as F
 
@@ -49,6 +46,7 @@ def segmentator_step(
     target = prepare_label(label, device, num_classes)
 
     output = model(image)
+
 
     # MultitaskLoss expects a batch dict
     loss, metrics = loss_fn(
@@ -119,6 +117,7 @@ def interpolator_step(
 
     output = model(input_a, input_b)
 
+
     loss, metrics = loss_fn(
         batch={
             "interp": {
@@ -183,6 +182,7 @@ def synthesizer_step(
             }
         }
     )
+
 
     assert torch.isfinite(loss)
     return output, loss

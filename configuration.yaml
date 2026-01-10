@@ -13,4 +13,4 @@ autoencoder_path: models/cleanvae_v10.safetensors
 lr_seg : 0.0001
 lr_interp : 0.0001
 lr_synth : 0.0001
-active_models : ["seg", "interp", "synth"]
+active_models : ["synth"]

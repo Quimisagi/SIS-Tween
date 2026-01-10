@@ -135,6 +135,35 @@ class PerceptualLoss(BaseLoss):
         loss = F.l1_loss(fx, fy)
         return loss, {"perceptual": loss}
 
+class L1Loss(BaseLoss):
+    def __init__(self, reduction: str = "mean"):
+        """
+        reduction: "mean" | "sum" | "none"
+        """
+        super().__init__()
+        self.reduction = reduction
+
+    def forward(self, pred: torch.Tensor, target: torch.Tensor):
+        """
+        pred, target: (B, C, H, W)
+        Expected to be in the SAME space and range
+        (e.g. both in [0,1] or both in [-1,1])
+        """
+        loss = F.l1_loss(
+            pred,
+            target,
+            reduction=self.reduction,
+        )
+
+        # For logging consistency, always report a scalar metric
+        if self.reduction == "none":
+            metric = loss.mean()
+        else:
+            metric = loss
+
+        return loss, {"l1": metric}
+
+
 
 class CompositeLoss(BaseLoss):
     def __init__(self, losses: dict[str, tuple[BaseLoss, float]]):

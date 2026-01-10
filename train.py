@@ -91,7 +91,8 @@ def train_fn(cfg, args):
     if "synth" in cfg.active_models:
         tasks["synth"] = losses.CompositeLoss(
             {
-                "perceptual": (losses.PerceptualLoss().to(device), 1.0),
+                "l1": (losses.L1Loss().to(device), 1.0),
+                "perceptual": (losses.PerceptualLoss().to(device), 0.1),
             }
         ).to(device)
 

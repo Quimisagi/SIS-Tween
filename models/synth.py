@@ -200,7 +200,7 @@ class Synthesizer(nn.Module):
         self.vae_z_dim = self.latent_channels * self.latent_hw * self.latent_hw
 
         self.spade_z_dim = 128
-        self.z_proj = nn.Linear(self.vae_z_dim * 2, self.spade_z_dim)
+        self.z_proj = nn.Linear(self.vae_z_dim, self.spade_z_dim)
 
         spade_config = SPADEConfig(
             semantic_nc=6,
@@ -220,12 +220,18 @@ class Synthesizer(nn.Module):
             z = latents * 0.18215
             return z
 
+    def decode(self, z):
+        with torch.no_grad():
+            z = z / 0.18215
+            images = self.vae.decode(z).sample
+            return images
+
     def forward(self, frame1, frame2, segmap):
         z1 = self.encode(frame1)
-        z2 = self.encode(frame2)
+        # z2 = self.encode(frame2)
 
-        z = torch.cat([z1, z2], dim=1)
-        z = z.flatten(start_dim=1)
+        # z = torch.cat([z1, z2], dim=1)
+        z = z1.flatten(start_dim=1)
         z = self.z_proj(z)
 
-        return self.generator(segmap, z)
+        return self.generator(segmap, z), self.decode(z1)
