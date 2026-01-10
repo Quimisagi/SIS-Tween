@@ -95,45 +95,46 @@ def samples_comparison(
     try:
         row_gt_img = [preprocess(img, True) for img in gt_images]
         row_gt_lbl = [preprocess(handle_visualization_labels(lbl)) for lbl in gt_labels]
-        row_seg = [
-            preprocess(seg_to_rgb.seg_to_rgb(lbl.detach())) for lbl in outputs["seg"]
-        ]
 
-        interp_img = preprocess(seg_to_rgb.seg_to_rgb(outputs["interp"].detach()))
+        all_images = []
+        text_labels = []
 
-        synth_img = preprocess(outputs["synth"].detach())
-        empty = torch.zeros_like(interp_img)
-        row_interp = [interp_img, synth_img, empty]
+        all_images += row_gt_img
+        text_labels += [f"GT_IMG_{i}" for i in range(len(row_gt_img))]
 
-        all_images = row_gt_img + row_gt_lbl + row_seg + row_interp
-        text_labels = [
-            "GT_IMG_0",
-            "GT_IMG_1",
-            "GT_IMG_2",
-            "GT_LBL_0",
-            "GT_LBL_1",
-            "GT_LBL_2",
-            "SEG_0",
-            "SEG_1",
-            "SEG_2",
-            "INTERP",
-            "SYNTH",
-            "",
-        ]
+        all_images += row_gt_lbl
+        text_labels += [f"GT_LBL_{i}" for i in range(len(row_gt_lbl))]
+
+        if outputs.get("seg") is not None:
+            row_seg = [
+                preprocess(seg_to_rgb.seg_to_rgb(lbl.detach()))
+                for lbl in outputs["seg"]
+            ]
+            all_images += row_seg
+            text_labels += [f"SEG_{i}" for i in range(len(row_seg))]
+
+        interp_img = None
+        if outputs.get("interp") is not None:
+            interp_img = preprocess(seg_to_rgb.seg_to_rgb(outputs["interp"].detach()))
+            all_images.append(interp_img)
+            text_labels.append("INTERP")
+
+        if outputs.get("synth") is not None:
+            synth_img = preprocess(outputs["synth"].detach())
+            all_images.append(synth_img)
+            text_labels.append("SYNTH")
 
         labeled_images = []
         for img, txt in zip(all_images, text_labels):
-            if txt != "":
-                labeled_images.append(_add_label_to_tensor(img, txt))
-            else:
-                labeled_images.append(img)
+            labeled_images.append(_add_label_to_tensor(img, txt))
 
         grid = make_grid(labeled_images, nrow=3, padding=4)
         writer.add_image(tag, grid, global_step)
 
-        for i, (img, txt) in enumerate(zip(all_images, text_labels)):
-            img_labeled = _add_label_to_tensor(img, txt) if txt != "" else img
-            writer.add_image(f"{tag}/{txt or f'img_{i}'}", img_labeled, global_step)
+        for img, txt in zip(all_images, text_labels):
+            writer.add_image(
+                f"{tag}/{txt}", _add_label_to_tensor(img, txt), global_step
+            )
 
     except Exception as e:
         logger.error(f"Visualization failed: {e}")

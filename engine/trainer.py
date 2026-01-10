@@ -123,9 +123,7 @@ class Trainer:
     def forward_synth(self, batch, optimizer=None):
         if not self.synth:
             return None, 0.0
-        return run_synthesizer(
-                self.synth, self.loss_fn, batch, self.device, optimizer
-        )
+        return run_synthesizer(self.synth, self.loss_fn, batch, self.device, optimizer)
 
     def log_step(self, stage, losses, batch=None, outputs=None):
         if not self.context.writer or self.global_step % 100 != 0:
