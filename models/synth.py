@@ -1,237 +1,129 @@
-"""
-Minimal SPADE (GauGAN) Generator
-VAE-latent ONLY version
-
-Adapted from NVIDIA GauGAN (2019)
-CC BY-NC-SA 4.0
+"""Adapted from:
+https://github.com/hahahappyboy/Semantic-Image-Synthesis-of-Anime-Characters-Based-on-Conditional-Generative-Adversarial-Networks/blob/main/models/generator.py
 """
 
-import torch
 import torch.nn as nn
+import models.norms as norms
+import torch
 import torch.nn.functional as F
-from dataclasses import dataclass
 
-
-# ============================================================
-# Config
-# ============================================================
-
-
-@dataclass
-class SPADEConfig:
-    semantic_nc: int
-    ngf: int = 64
-    z_dim: int = 256
-    crop_size: int = 256
-    aspect_ratio: float = 1.0
-    num_upsampling_layers: str = "normal"  # normal | more | most
-
-
-# ============================================================
-# SPADE Normalization
-# ============================================================
-
-
-class SPADE(nn.Module):
-    def __init__(self, norm_nc, label_nc):
+class ApplyNoise(nn.Module):
+    def __init__(self, channels, opt, context):
         super().__init__()
+        self.weights = []
+        for i in range(opt.class_num):
+            self.weights.append(nn.Parameter(torch.zeros(channels,device=torch.device(context.device))))
 
-        self.param_free_norm = nn.InstanceNorm2d(norm_nc, affine=False)
+    def forward(self, x, noise,class_num):
+        if noise is None:
+            noise = torch.randn(x.size(0), 1, x.size(2), x.size(3), device=x.device, dtype=x.dtype)
+        return x + self.weights[class_num].view(1, -1, 1, 1) * noise.to(x.device)
 
-        hidden_nc = 128
-        self.mlp_shared = nn.Sequential(
-            nn.Conv2d(label_nc, hidden_nc, 3, padding=1),
-            nn.ReLU(inplace=True),
-        )
-        self.mlp_gamma = nn.Conv2d(hidden_nc, norm_nc, 3, padding=1)
-        self.mlp_beta = nn.Conv2d(hidden_nc, norm_nc, 3, padding=1)
-
-    def forward(self, x, segmap):
-        x = self.param_free_norm(x)
-
-        segmap = F.interpolate(segmap, size=x.shape[2:], mode="nearest")
-        actv = self.mlp_shared(segmap)
-
-        gamma = self.mlp_gamma(actv)
-        beta = self.mlp_beta(actv)
-
-        return x * (1 + gamma) + beta
-
-
-# ============================================================
-# SPADE ResNet Block
-# ============================================================
-
-
-class SPADEResnetBlock(nn.Module):
-    def __init__(self, fin, fout, config: SPADEConfig):
+class AddNoise(nn.Module):
+    def __init__(self, channels, opt, context):
         super().__init__()
+        self.noise = ApplyNoise(channels, opt, context)
 
-        self.learned_shortcut = fin != fout
-        fmiddle = min(fin, fout)
-
-        self.norm_0 = SPADE(fin, config.semantic_nc)
-        self.conv_0 = nn.Conv2d(fin, fmiddle, 3, padding=1)
-
-        self.norm_1 = SPADE(fmiddle, config.semantic_nc)
-        self.conv_1 = nn.Conv2d(fmiddle, fout, 3, padding=1)
-
-        if self.learned_shortcut:
-            self.norm_s = SPADE(fin, config.semantic_nc)
-            self.conv_s = nn.Conv2d(fin, fout, 1, bias=False)
-
-    def forward(self, x, seg):
-        x_s = self.shortcut(x, seg)
-
-        dx = self.conv_0(F.leaky_relu(self.norm_0(x, seg), 0.2))
-        dx = self.conv_1(F.leaky_relu(self.norm_1(dx, seg), 0.2))
-
-        return x_s + dx
-
-    def shortcut(self, x, seg):
-        if self.learned_shortcut:
-            x = self.conv_s(self.norm_s(x, seg))
+    def forward(self, x,noise,class_num):
+        x = self.noise(x, noise,class_num)
         return x
-
-
-# ============================================================
-# SPADE Generator
-# ============================================================
-
-
-class SPADEGenerator(nn.Module):
-    def __init__(self, config: SPADEConfig):
-        super().__init__()
-        self.config = config
-        nf = config.ngf
-
-        self.sw, self.sh = self._compute_latent_vector_size()
-
-        # --- VAE latent projection (MANDATORY) ---
-        self.fc = nn.Linear(config.z_dim, 16 * nf * self.sw * self.sh)
-
-        self.head_0 = SPADEResnetBlock(16 * nf, 16 * nf, config)
-
-        self.G_middle_0 = SPADEResnetBlock(16 * nf, 16 * nf, config)
-        self.G_middle_1 = SPADEResnetBlock(16 * nf, 16 * nf, config)
-
-        self.up_0 = SPADEResnetBlock(16 * nf, 8 * nf, config)
-        self.up_1 = SPADEResnetBlock(8 * nf, 4 * nf, config)
-        self.up_2 = SPADEResnetBlock(4 * nf, 2 * nf, config)
-        self.up_3 = SPADEResnetBlock(2 * nf, nf, config)
-
-        final_nc = nf
-        if config.num_upsampling_layers == "most":
-            self.up_4 = SPADEResnetBlock(nf, nf // 2, config)
-            final_nc = nf // 2
-
-        self.conv_img = nn.Conv2d(final_nc, 3, 3, padding=1)
-        self.up = nn.Upsample(scale_factor=2)
-
-    # --------------------------------------------------------
-
-    def _compute_latent_vector_size(self):
-        if self.config.num_upsampling_layers == "normal":
-            num_up = 5
-        elif self.config.num_upsampling_layers == "more":
-            num_up = 6
-        elif self.config.num_upsampling_layers == "most":
-            num_up = 7
-        else:
-            raise ValueError("Invalid num_upsampling_layers")
-
-        sw = self.config.crop_size // (2**num_up)
-        sh = round(sw / self.config.aspect_ratio)
-        return sw, sh
-
-    # --------------------------------------------------------
-
-    def forward(self, segmap, latent_z):
-        """
-        segmap  : [B, semantic_nc, H, W]  (one-hot)
-        latent_z: [B, z_dim]              (from pretrained VAE)
-        """
-
-        if latent_z is None:
-            raise ValueError("latent_z is required (VAE-only generator)")
-
-        x = self.fc(latent_z)
-        x = x.view(-1, 16 * self.config.ngf, self.sh, self.sw)
-
-        x = self.head_0(x, segmap)
-
-        x = self.up(x)
-        x = self.G_middle_0(x, segmap)
-
-        if self.config.num_upsampling_layers in ("more", "most"):
-            x = self.up(x)
-
-        x = self.G_middle_1(x, segmap)
-
-        x = self.up(x)
-        x = self.up_0(x, segmap)
-        x = self.up(x)
-        x = self.up_1(x, segmap)
-        x = self.up(x)
-        x = self.up_2(x, segmap)
-        x = self.up(x)
-        x = self.up_3(x, segmap)
-
-        if self.config.num_upsampling_layers == "most":
-            x = self.up(x)
-            x = self.up_4(x, segmap)
-
-        x = torch.tanh(self.conv_img(F.leaky_relu(x, 0.2)))
-        return x
-
 
 class Synthesizer(nn.Module):
-    def __init__(self, vae, image_size=128):
+    def __init__(self, opt, context):
         super().__init__()
-        self.vae = vae
+        self.opt = opt
+        self.const_inputs = []
+        self.class_num = self.opt.class_num
+        for i in range(0, self.class_num):
+            z = torch.randn(self.opt.batch_size,self.opt.z_dim, dtype=torch.float32,device=torch.device(context.device))
+            z = z.view(z.size(0), self.opt.z_dim, 1, 1)
+            z = z.expand(z.size(0), self.opt.z_dim, 512, 512)
+            self.const_inputs.append(nn.Parameter(z))
+        # if opt.phase == "test":
+        #     torch.save(self.const_inputs,"const_input_"+self.opt.name+".pt")
 
-        for p in self.vae.parameters():
-            p.requires_grad = False
-        self.vae.eval()
+        self.addNoise_body = nn.ModuleList([])
+        self.noise_inputs = []
+        for i in range(0, self.class_num):
+            self.noise_inputs.append([])
 
-        # ---- Diffusers VAE latent size ----
-        self.latent_channels = vae.config.latent_channels  # usually 4
-        self.latent_hw = image_size // 8  # usually 32
-        self.vae_z_dim = self.latent_channels * self.latent_hw * self.latent_hw
+        ch = opt.channels_G
+        self.channels = [16*ch, 16*ch, 16*ch, 8*ch, 4*ch, 2*ch, 1*ch]
+        self.init_W, self.init_H = self.compute_latent_vector_size(opt)
+        self.conv_img = nn.Conv2d(self.channels[-1], 3, 3, padding=1)
+        self.up = nn.Upsample(scale_factor=2)
+        self.body = nn.ModuleList([])
+        for i in range(len(self.channels)-1):
+            self.body.append(ResnetBlock_with_SPADE(self.channels[i], self.channels[i+1], opt))
+            self.addNoise_body.append(AddNoise(self.channels[i+1],opt=opt, context=context))
 
-        self.spade_z_dim = 128
-        self.z_proj = nn.Linear(self.vae_z_dim, self.spade_z_dim)
+            if i < self.opt.num_res_blocks - 1:
+                for j in range(0, self.class_num):
+                    self.noise_inputs[j].append(torch.randn([1, 1 ,2*self.init_W * 2**i, 2*self.init_H * 2**i],device=torch.device(context.device)))
+            else:
+                for j in range(0, self.class_num):
+                    self.noise_inputs[j].append(torch.randn([1, 1 ,2*self.init_W * 2**(i-1), 2*self.init_H * 2**(i-1)],device=torch.device(context.device)))
 
-        spade_config = SPADEConfig(
-            semantic_nc=6,
-            ngf=64,
-            z_dim=self.spade_z_dim,
-            crop_size=image_size,
-            aspect_ratio=1.0,
-            num_upsampling_layers="normal",
-        )
+        if not self.opt.no_3dnoise:
+            self.fc = nn.Conv2d(self.opt.semantic_nc + self.opt.z_dim, 16 * ch, 3, padding=1)
+        else:
+            self.fc = nn.Conv2d(self.opt.semantic_nc, 16 * ch, 3, padding=1)
 
-        self.generator = SPADEGenerator(spade_config)
 
-    def encode(self, images):
-        with torch.no_grad():
-            latent_dist = self.vae.encode(images).latent_dist
-            latents = latent_dist.sample()  # [B, 4, 32, 32]
-            z = latents * 0.18215
-            return z
+    def compute_latent_vector_size(self, opt):
+        w = opt.crop_size // (2**(opt.num_res_blocks-1))
+        h = round(w / opt.aspect_ratio)
+        return h, w
+    def forward(self, input,input_class, z=None):
+        seg = input
+        if self.opt.gpu_ids != "-1":
+            seg.cuda(int(self.opt.gpu_ids))
+        if not self.opt.no_3dnoise:
+            input_const = self.const_inputs[input_class]
+            seg = torch.cat((input_const, seg), dim=1)
 
-    def decode(self, z):
-        with torch.no_grad():
-            z = z / 0.18215
-            images = self.vae.decode(z).sample
-            return images
+        x = F.interpolate(seg, size=(self.init_W, self.init_H))
+        x = self.fc(x)
 
-    def forward(self, frame1, frame2, segmap):
-        z1 = self.encode(frame1)
-        # z2 = self.encode(frame2)
+        for i in range(self.opt.num_res_blocks):#num_res_blocks = 6
+            x = self.body[i](x, seg)
+            if i < self.opt.num_res_blocks-1:
+                x = self.up(x)
+            x = self.addNoise_body[i](x, self.noise_inputs[input_class][i],input_class)
 
-        # z = torch.cat([z1, z2], dim=1)
-        z = z1.flatten(start_dim=1)
-        z = self.z_proj(z)
+        x = self.conv_img(F.leaky_relu(x, 2e-1))
+        x = F.tanh(x)
+        return x
 
-        return self.generator(segmap, z), self.decode(z1)
+
+class ResnetBlock_with_SPADE(nn.Module):
+    def __init__(self, fin, fout, opt):
+        super().__init__()
+        self.opt = opt
+        self.learned_shortcut = (fin != fout)
+        fmiddle = min(fin, fout)
+        sp_norm = norms.get_spectral_norm(opt)
+        self.conv_0 = sp_norm(nn.Conv2d(fin, fmiddle, kernel_size=3, padding=1))
+        self.conv_1 = sp_norm(nn.Conv2d(fmiddle, fout, kernel_size=3, padding=1))
+        if self.learned_shortcut:
+            self.conv_s = sp_norm(nn.Conv2d(fin, fout, kernel_size=1, bias=False))
+
+        spade_conditional_input_dims = opt.semantic_nc
+        if not opt.no_3dnoise:
+            spade_conditional_input_dims += opt.z_dim
+
+        self.norm_0 = norms.SPADE(opt, fin, spade_conditional_input_dims)
+        self.norm_1 = norms.SPADE(opt, fmiddle, spade_conditional_input_dims)
+        if self.learned_shortcut:
+            self.norm_s = norms.SPADE(opt, fin, spade_conditional_input_dims)
+        self.activ = nn.LeakyReLU(0.2, inplace=True)
+
+    def forward(self, x, seg):
+        if self.learned_shortcut:
+            x_s = self.conv_s(self.norm_s(x, seg))
+        else:
+            x_s = x
+        dx = self.conv_0(self.activ(self.norm_0(x, seg)))
+        dx = self.conv_1(self.activ(self.norm_1(dx, seg)))
+        out = x_s + dx
+        return out

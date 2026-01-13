@@ -1,0 +1,55 @@
+                EMA_decay: 0.9999                        
+            active_models: ['seg', 'interp', 'synth']    
+             add_vgg_loss: False                         
+             aspect_ratio: 1.0                           
+         autoencoder_path:                               
+               batch_size: 4                             
+                    beta1: 0.0                           
+                    beta2: 0.999                         
+               channels_D: 64                            
+               channels_G: 64                            
+          checkpoints_dir: ./checkpoints                 
+                class_num: 24                            
+           continue_train: False                         
+                crop_size: 256                           
+             dataset_mode: coco                          
+             dataset_path: /home/quimisagi/Daigaku/sis_data	[default: None]
+      distributed_enabled: False                         
+                   epochs: 100                           
+                 freq_fid: 5000                          
+               freq_print: 1000                          
+           freq_save_ckpt: 20000                         
+         freq_save_latest: 10000                         
+           freq_save_loss: 2500                          
+         freq_smooth_loss: 250                           
+                  gpu_ids: 0                             
+               image_size: 256                           
+          lambda_labelmix: 10.0                          
+               lambda_vgg: 10.0                          
+       loaded_latest_iter: 0                             	[default: None]
+                     lr_d: 0.0004                        
+                     lr_g: 0.0001                        
+                lr_interp: 0.0001                        
+                   lr_seg: 0.0001                        
+                 lr_synth: 0.0001                        
+                     name: sis_tween                     
+               no_3dnoise: False                         
+                   no_EMA: False                         
+      no_balancing_inloss: False                         
+                  no_flip: False                         
+              no_labelmix: False                         
+         no_spectral_norm: False                         
+           num_res_blocks: 6                             
+          num_seg_classes: 6                             
+              num_workers: 4                             
+          param_free_norm: syncbatch                     
+                    phase: train                         
+            save_interval: 5                             
+            save_progress: True                          
+                     seed: 42                            
+segmentator_score_threshold: 0.1                           
+              semantic_nc: 11                            
+                 spade_ks: 3                             
+     tensorboard_logs_dir: ./runs                        
+               which_iter: latest                        
+                    z_dim: 11                            

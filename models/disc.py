@@ -1,3 +1,7 @@
+"""
+Adapted from:
+    https://github.com/hahahappyboy/Semantic-Image-Synthesis-of-Anime-Characters-Based-on-Conditional-Generative-Adversarial-Networks/blob/main/models/discriminator.py
+"""
 import torch
 import torch.nn as nn
 import torch.nn.functional as F

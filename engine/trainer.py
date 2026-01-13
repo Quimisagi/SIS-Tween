@@ -12,58 +12,56 @@ from utils.dice_score import dice_score_multiclass
 
 
 class Trainer:
-    def __init__(self, loss_fn, dataloaders, cfg, context):
-        self.cfg = cfg
+    def __init__(self, loss_fn, dataloaders, opt, context):
+        self.opt = opt
         self.context = context
         self.dataloaders = dataloaders
         self.loss_fn = loss_fn
         self.device = context.device
 
         self.seg = (
-            Segmentator(num_seg_classes=cfg.num_seg_classes).to(self.device)
-            if "seg" in cfg.active_models
+            Segmentator(num_seg_classes=opt.num_seg_classes).to(self.device)
+            if "seg" in opt.active_models
             else None
         )
         self.interp = (
-            Interpolator(sem_c=cfg.num_seg_classes, base_c=64).to(self.device)
-            if "interp" in cfg.active_models
+            Interpolator(sem_c=opt.num_seg_classes, base_c=64).to(self.device)
+            if "interp" in opt.active_models
             else None
         )
         self.synth = (
-            Synthesizer(AutoencoderKL.from_single_file(cfg.autoencoder_path)).to(
-                self.device
-            )
-            if "synth" in cfg.active_models
+            Synthesizer(opt, context).to(self.device)
+            if "synth" in opt.active_models
             else None
         )
 
-        if cfg.distributed_enabled and context.world_size > 1:
+        if opt.distributed_enabled and context.world_size > 1:
             if self.seg:
                 self.seg = DistributedDataParallel(
-                    self.seg, device_ids=[cfg.local_rank]
+                    self.seg, device_ids=[opt.local_rank]
                 )
             if self.interp:
                 self.interp = DistributedDataParallel(
-                    self.interp, device_ids=[cfg.local_rank]
+                    self.interp, device_ids=[opt.local_rank]
                 )
-            if self.synth:
-                self.synth = DistributedDataParallel(
-                    self.synth, device_ids=[cfg.local_rank]
-                )
+            # if self.synth:
+            #     self.synth = DistributedDataParallel(
+            #         self.synth, device_ids=[opt.local_rank]
+            #     )
 
         self.optimizers = {}
         if self.seg:
             self.optimizers["seg"] = torch.optim.Adam(
-                self.seg.parameters(), lr=cfg.lr_seg
+                self.seg.parameters(), lr=opt.lr_seg
             )
         if self.interp:
             self.optimizers["interp"] = torch.optim.Adam(
-                self.interp.parameters(), lr=cfg.lr_interp
+                self.interp.parameters(), lr=opt.lr_interp
             )
-        if self.synth:
-            self.optimizers["synth"] = torch.optim.Adam(
-                self.synth.parameters(), lr=cfg.lr_synth
-            )
+        # if self.synth:
+        #     self.optimizers["synth"] = torch.optim.Adam(
+        #         self.synth.parameters(), lr=opt.lr_synth
+        #     )
 
         self.schedulers = {}
         if self.seg:
@@ -74,10 +72,10 @@ class Trainer:
             self.schedulers["interp"] = torch.optim.lr_scheduler.StepLR(
                 self.optimizers["interp"], 10, 0.1
             )
-        if self.synth:
-            self.schedulers["synth"] = torch.optim.lr_scheduler.StepLR(
-                self.optimizers["synth"], 10, 0.1
-            )
+        # if self.synth:
+        #     self.schedulers["synth"] = torch.optim.lr_scheduler.StepLR(
+        #         self.optimizers["synth"], 10, 0.1
+        #     )
 
         self.epoch = 0
         self.global_step = 0
@@ -120,17 +118,17 @@ class Trainer:
             self.interp, self.loss_fn, batch, self.device, optimizer
         )
 
-    def forward_synth(self, batch, optimizer=None):
-        if not self.synth:
-            return None, 0.0
-        return run_synthesizer(self.synth, self.loss_fn, batch, self.device, optimizer)
+    # def forward_synth(self, batch, optimizer=None):
+    #     if not self.synth:
+    #         return None, 0.0
+    #     return run_synthesizer(self.synth, self.loss_fn, batch, self.device, optimizer)
 
     def log_step(self, stage, losses, batch=None, outputs=None):
         if not self.context.writer or self.global_step % 100 != 0:
             return
         loss_str = " ".join(f"{k}={v:.4f}" for k, v in losses.items())
         self.context.logger.info(
-            f"[{stage}][Epoch:{self.epoch+1}/{self.cfg.epochs}][Step:{self.global_step}] {loss_str}"
+            f"[{stage}][Epoch:{self.epoch+1}/{self.opt.epochs}][Step:{self.global_step}] {loss_str}"
         )
         if "Segmentation" in losses:
             visualization.plot(
@@ -150,14 +148,14 @@ class Trainer:
             )
 
     def stage1_warmup(self):
-        if not (self.seg or self.interp or self.synth):
+        if not (self.seg or self.interp): # or self.synth):
             return
         if self.seg:
             self.seg.train()
         if self.interp:
             self.interp.train()
-        if self.synth:
-            self.synth.train()
+        # if self.synth:
+        #     self.synth.train()
         for data in self.dataloaders.train:
             batch = self.make_batch(data)
             seg_out, loss_seg = self.forward_seg(
@@ -166,18 +164,18 @@ class Trainer:
             interp_out, loss_interp = self.forward_interp(
                 batch, optimizer=self.optimizers.get("interp")
             )
-            synth_out, loss_synth = self.forward_synth(
-                batch, optimizer=self.optimizers.get("synth")
-            )
+            # synth_out, loss_synth = self.forward_synth(
+            #     batch, optimizer=self.optimizers.get("synth")
+            # )
             self.log_step(
                 stage="Stage1",
                 losses={
                     "Segmentation": loss_seg,
                     "Interpolation": loss_interp,
-                    "Synthesis": loss_synth,
+                    # "Synthesis": loss_synth,
                 },
                 batch=batch,
-                outputs={"seg": seg_out, "interp": interp_out, "synth": synth_out},
+                outputs={"seg": seg_out, "interp": interp_out} #"synth": synth_out},
             )
             self.global_step += 1
 
@@ -220,8 +218,8 @@ class Trainer:
             seg_out, loss_seg = self.forward_seg(batch, optimizer=None)
             self.replace_labels_with_segmentation(batch, seg_out)
             interp_out, loss_interp = self.forward_interp(batch, optimizer=None)
-            total_loss = (self.cfg.seg_weight * loss_seg if self.seg else 0.0) + (
-                self.cfg.interp_weight * loss_interp if self.interp else 0.0
+            total_loss = (self.opt.seg_weight * loss_seg if self.seg else 0.0) + (
+                self.opt.interp_weight * loss_interp if self.interp else 0.0
             )
             total_loss.backward()
             if self.optimizers.get("interp"):
@@ -273,8 +271,8 @@ class Trainer:
                 batch = self.make_batch(data)
                 seg_out, loss_seg = self.forward_seg(batch)
                 interp_out, loss_interp = self.forward_interp(batch)
-                synth_out, _ = self.forward_synth(batch)
-                outputs = {"seg": seg_out, "interp": interp_out, "synth": synth_out}
+                # synth_out, _ = self.forward_synth(batch)
+                outputs = {"seg": seg_out, "interp": interp_out}# "synth": synth_out}
                 total_loss_seg += loss_seg
                 total_loss_interp += loss_interp
                 if seg_out is not None:
@@ -306,7 +304,7 @@ class Trainer:
 
     def train(self):
         interp_val_history = deque(maxlen=5)
-        for self.epoch in range(self.cfg.epochs):
+        for self.epoch in range(self.opt.epochs):
             if isinstance(self.dataloaders.train.sampler, DistributedSampler):
                 self.dataloaders.train.sampler.set_epoch(self.epoch)
             for s in self.schedulers.values():
@@ -318,7 +316,7 @@ class Trainer:
             else:
                 self.stage3_joint_finetune()
             val_loss_seg, val_loss_interp, dice = self.validate()
-            if self.train_stage == 0 and dice > self.cfg.segmentator_score_threshold:
+            if self.train_stage == 0 and dice > self.opt.segmentator_score_threshold:
                 self.train_stage = 1
             if self.train_stage == 1:
                 interp_val_history.append(val_loss_interp)
