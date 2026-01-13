@@ -26,6 +26,8 @@ class TrainingState:
 class Batch:
     images: List[torch.Tensor]
     labels: List[torch.Tensor]
+    edges: List[torch.Tensor]
+    class_index: torch.Tensor
 
 
 @dataclass

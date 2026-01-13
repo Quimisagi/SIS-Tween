@@ -74,10 +74,7 @@ class Synthesizer(nn.Module):
         w = opt.crop_size // (2**(opt.num_res_blocks-1))
         h = round(w / opt.aspect_ratio)
         return h, w
-    def forward(self, input,input_class, z=None):
-        seg = input
-        if self.opt.gpu_ids != "-1":
-            seg.cuda(int(self.opt.gpu_ids))
+    def forward(self, seg, input_class):
         if not self.opt.no_3dnoise:
             input_const = self.const_inputs[input_class]
             seg = torch.cat((input_const, seg), dim=1)

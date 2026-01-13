@@ -44,10 +44,10 @@ class Trainer:
                 self.interp = DistributedDataParallel(
                     self.interp, device_ids=[opt.local_rank]
                 )
-            # if self.synth:
-            #     self.synth = DistributedDataParallel(
-            #         self.synth, device_ids=[opt.local_rank]
-            #     )
+            if self.synth:
+                self.synth = DistributedDataParallel(
+                    self.synth, device_ids=[opt.local_rank]
+                )
 
         self.optimizers = {}
         if self.seg:
@@ -58,10 +58,10 @@ class Trainer:
             self.optimizers["interp"] = torch.optim.Adam(
                 self.interp.parameters(), lr=opt.lr_interp
             )
-        # if self.synth:
-        #     self.optimizers["synth"] = torch.optim.Adam(
-        #         self.synth.parameters(), lr=opt.lr_synth
-        #     )
+        if self.synth:
+            self.optimizers["synth"] = torch.optim.Adam(
+                self.synth.parameters(), lr=opt.lr_synth
+            )
 
         self.schedulers = {}
         if self.seg:
@@ -72,10 +72,10 @@ class Trainer:
             self.schedulers["interp"] = torch.optim.lr_scheduler.StepLR(
                 self.optimizers["interp"], 10, 0.1
             )
-        # if self.synth:
-        #     self.schedulers["synth"] = torch.optim.lr_scheduler.StepLR(
-        #         self.optimizers["synth"], 10, 0.1
-        #     )
+        if self.synth:
+            self.schedulers["synth"] = torch.optim.lr_scheduler.StepLR(
+                self.optimizers["synth"], 10, 0.1
+            )
 
         self.epoch = 0
         self.global_step = 0
@@ -85,7 +85,7 @@ class Trainer:
         """
         data: dict with keys "images" and "labels"
         """
-        return Batch(images=data["images"], labels=data["labels"])
+        return Batch(images=data["images"], labels=data["labels"], edges=data["edges"], class_index=data["class_index"])
 
     def relative_improvement(self, values, eps: float = 1e-8) -> float:
         """
@@ -309,12 +309,13 @@ class Trainer:
                 self.dataloaders.train.sampler.set_epoch(self.epoch)
             for s in self.schedulers.values():
                 s.step()
-            if self.train_stage == 0:
-                self.stage1_warmup()
-            elif self.train_stage == 1:
-                self.stage2_frozen_seg()
-            else:
-                self.stage3_joint_finetune()
+            # if self.train_stage == 0:
+            #     self.stage1_warmup()
+            # elif self.train_stage == 1:
+            #     self.stage2_frozen_seg()
+            # else:
+                # self.stage3_joint_finetune()
+            self.stage1_warmup()
             val_loss_seg, val_loss_interp, dice = self.validate()
             if self.train_stage == 0 and dice > self.opt.segmentator_score_threshold:
                 self.train_stage = 1

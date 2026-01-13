@@ -43,10 +43,9 @@ def segmentator_step(
     num_classes: int,
 ):
     image = image.to(device)
-    target = prepare_label(label, device, num_classes)
+    target = prepare_label(label, device, num_classes)  
 
     output = model(image)
-
 
     # MultitaskLoss expects a batch dict
     loss, metrics = loss_fn(
@@ -107,6 +106,7 @@ def interpolator_step(
     device,
     num_classes: int,
 ):
+    assert len(batch.images) == 3, "Batch must contain exactly 3 images for interpolation."
     input_a = prepare_interp_input(
         batch.labels[0], batch.images[0], device, num_classes
     )
