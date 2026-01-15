@@ -1,5 +1,4 @@
 from torch.nn.parallel import DistributedDataParallel
-from diffusers import AutoencoderKL
 import torch
 from torch.utils.data import DistributedSampler
 
@@ -244,6 +243,7 @@ class Trainer:
                     "Synthesis_D": loss_D,
                 },
                 outputs={"seg": seg_out, "interp": interp_out, "synth": fake_synth_out},
+                batch=batch,
             )
             self.global_step += 1
 
@@ -279,6 +279,7 @@ class Trainer:
                     "Synthesis_D": loss_D,
                 },
                 outputs={"seg": seg_out, "interp": interp_out, "synth": fake_synth_out},
+                batch=batch,
             )
             self.global_step += 1
 
@@ -317,6 +318,7 @@ class Trainer:
                     "seg": seg_out,
                     "synth": fake_synth_out,
                 },
+                batch=batch,
             )
             self.global_step += 1
 
@@ -361,6 +363,8 @@ class Trainer:
                     "Synthesis_G": loss_G,
                     "Synthesis_D": loss_D,
                 },
+                outputs={"seg": seg_out, "interp": interp_out, "synth": fake_synth_out},
+                batch=batch,
             )
             self.global_step += 1
 
