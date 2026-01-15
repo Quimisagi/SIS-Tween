@@ -3,10 +3,10 @@ from diffusers import AutoencoderKL
 import torch
 from torch.utils.data import DistributedSampler
 
-from models import Interpolator, Segmentator, Synthesizer
+from models import Interpolator, Segmentator, Synthesizer, Discriminator
 from utils import visualization
 from .bundles import Batch
-from .training_steps import run_segmentator, run_interpolator, run_synthesizer
+from .training_steps import run_segmentator, run_interpolator, run_synthesizer, run_synthesizer_gan
 from collections import deque
 from utils.dice_score import dice_score_multiclass
 
@@ -20,17 +20,22 @@ class Trainer:
         self.device = context.device
 
         self.seg = (
-            Segmentator(num_seg_classes=opt.num_seg_classes).to(self.device)
+            Segmentator(num_seg_classes=opt.semantic_nc).to(self.device)
             if "seg" in opt.active_models
             else None
         )
         self.interp = (
-            Interpolator(sem_c=opt.num_seg_classes, base_c=64).to(self.device)
+            Interpolator(sem_c=opt.semantic_nc, base_c=64).to(self.device)
             if "interp" in opt.active_models
             else None
         )
         self.synth = (
             Synthesizer(opt, context).to(self.device)
+            if "synth" in opt.active_models
+            else None
+        )
+        self.disc = (
+            Discriminator(opt).to(self.device)
             if "synth" in opt.active_models
             else None
         )
@@ -48,6 +53,10 @@ class Trainer:
                 self.synth = DistributedDataParallel(
                     self.synth, device_ids=[opt.local_rank]
                 )
+            if self.disc:
+                self.disc = DistributedDataParallel(
+                    self.disc, device_ids=[opt.local_rank]
+                )
 
         self.optimizers = {}
         if self.seg:
@@ -62,6 +71,10 @@ class Trainer:
             self.optimizers["synth"] = torch.optim.Adam(
                 self.synth.parameters(), lr=opt.lr_synth
             )
+        if self.disc:
+            self.optimizers["disc"] = torch.optim.Adam(
+                self.disc.parameters(), lr=opt.lr_d
+            )
 
         self.schedulers = {}
         if self.seg:
@@ -75,6 +88,10 @@ class Trainer:
         if self.synth:
             self.schedulers["synth"] = torch.optim.lr_scheduler.StepLR(
                 self.optimizers["synth"], 10, 0.1
+            )
+        if self.disc:
+            self.schedulers["disc"] = torch.optim.lr_scheduler.StepLR(
+                self.optimizers["disc"], 10, 0.1
             )
 
         self.epoch = 0
@@ -118,10 +135,24 @@ class Trainer:
             self.interp, self.loss_fn, batch, self.device, optimizer
         )
 
-    # def forward_synth(self, batch, optimizer=None):
-    #     if not self.synth:
-    #         return None, 0.0
-    #     return run_synthesizer(self.synth, self.loss_fn, batch, self.device, optimizer)
+    def forward_synth(self, batch, optimizer=None):
+        if not self.synth:
+            return None, 0.0
+        return run_synthesizer(self.synth, self.loss_fn, batch, self.device, optimizer)
+
+    def forward_synth_gan(self, batch, optimizer_synth=None, optimizer_disc=None):
+        if not self.synth or not self.disc:
+            return None, 0.0, 0.0
+        return run_synthesizer_gan(
+            self.synth,
+            self.disc,
+            self.loss_fn,
+            batch,
+            self.device,
+            optimizer_synth,
+            optimizer_disc,
+        )
+
 
     def log_step(self, stage, losses, batch=None, outputs=None):
         if not self.context.writer or self.global_step % 100 != 0:
@@ -137,6 +168,20 @@ class Trainer:
                 self.global_step,
                 "loss/segmentation",
             )
+        if "Interpolation" in losses:
+            visualization.plot(
+                self.context,
+                {"train": losses["Interpolation"]},
+                self.global_step,
+                "loss/interpolation",
+            )
+        if "Synthesis" in losses:
+            visualization.plot(
+                self.context,
+                {"train": losses["Synthesis"]},
+                self.global_step,
+                "loss/synthesis",
+            )
         if batch is not None and outputs is not None:
             visualization.samples_comparison(
                 self.context,
@@ -148,14 +193,14 @@ class Trainer:
             )
 
     def stage1_warmup(self):
-        if not (self.seg or self.interp): # or self.synth):
+        if not (self.seg or self.interp or self.synth):
             return
         if self.seg:
             self.seg.train()
         if self.interp:
             self.interp.train()
-        # if self.synth:
-        #     self.synth.train()
+        if self.synth:
+            self.synth.train()
         for data in self.dataloaders.train:
             batch = self.make_batch(data)
             seg_out, loss_seg = self.forward_seg(
@@ -167,15 +212,21 @@ class Trainer:
             # synth_out, loss_synth = self.forward_synth(
             #     batch, optimizer=self.optimizers.get("synth")
             # )
+            fake_synth_out, loss_G, loss_D = self.forward_synth_gan(
+                batch,
+                optimizer_synth=self.optimizers.get("synth"),
+                optimizer_disc=self.optimizers.get("disc"),
+            )
             self.log_step(
                 stage="Stage1",
                 losses={
                     "Segmentation": loss_seg,
                     "Interpolation": loss_interp,
-                    # "Synthesis": loss_synth,
+                    "Synthesis_G": loss_G,
+                    "Synthesis_D": loss_D,
                 },
                 batch=batch,
-                outputs={"seg": seg_out, "interp": interp_out} #"synth": synth_out},
+                outputs={"seg": seg_out, "interp": interp_out, "synth": fake_synth_out},
             )
             self.global_step += 1
 
@@ -271,8 +322,8 @@ class Trainer:
                 batch = self.make_batch(data)
                 seg_out, loss_seg = self.forward_seg(batch)
                 interp_out, loss_interp = self.forward_interp(batch)
-                # synth_out, _ = self.forward_synth(batch)
-                outputs = {"seg": seg_out, "interp": interp_out}# "synth": synth_out}
+                fake_synth_out, _, _ = self.forward_synth_gan(batch)
+                outputs = {"seg": seg_out, "interp": interp_out}
                 total_loss_seg += loss_seg
                 total_loss_interp += loss_interp
                 if seg_out is not None:

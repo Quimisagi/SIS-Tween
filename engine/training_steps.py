@@ -23,10 +23,37 @@ def prepare_interp_input(label, image, device, num_classes: int):
 
 
 def prepare_synth_inputs(batch, device, num_classes: int):
-    label = prepare_label(batch.labels[1], device, num_classes)
-    image0 = batch.images[0].to(device)
-    image2 = batch.images[2].to(device)
-    return label, image0, image2
+    # segmentation label (middle frame)
+    seg = (
+        F.one_hot(batch.labels[1].squeeze(1).long(), num_classes=num_classes)
+        .permute(0, 3, 1, 2)
+        .float()
+        .to(device)
+    )
+
+    # class id (assumed scalar per batch)
+    # e.g. batch.class_id or batch.labels[1] contains class index
+    input_class = batch.class_index[0].to(device)
+    if torch.is_tensor(input_class):
+        input_class = int(input_class.item())
+
+    return seg, input_class
+
+def prepare_synth_gan_inputs(batch, device, num_classes: int):
+    # segmentation label (middle frame)
+    seg = (
+        F.one_hot(batch.labels[1].squeeze(1).long(), num_classes=num_classes)
+        .permute(0, 3, 1, 2)
+        .float()
+        .to(device)
+        )
+    input_class = batch.class_index[0].to(device)
+    if torch.is_tensor(input_class):
+        input_class = int(input_class.item())
+
+    edge = batch.edges[1].to(device)
+
+    return seg, edge, input_class
 
 
 # -----------------------------
@@ -169,10 +196,11 @@ def synthesizer_step(
     device,
     num_classes: int,
 ):
-    label, image0, image2 = prepare_synth_inputs(batch, device, num_classes)
+    seg, input_class = prepare_synth_inputs(batch, device, num_classes)
     target = batch.images[1].to(device)
 
-    output = model(image0, image2, label)
+    # SPADE Synthesizer signature: forward(seg, input_class)
+    output = model(seg, input_class)
 
     loss, metrics = loss_fn(
         batch={
@@ -182,7 +210,6 @@ def synthesizer_step(
             }
         }
     )
-
 
     assert torch.isfinite(loss)
     return output, loss
@@ -212,3 +239,131 @@ def run_synthesizer(
             optimizer.step()
 
     return output.detach(), loss.item()
+
+
+def synthesizer_G_step(
+    generator,
+    discriminator,
+    loss_fn,
+    batch,
+    device,
+    num_classes: int,
+):
+    seg, edge, input_class = prepare_synth_gan_inputs(batch, device, num_classes)
+
+    fake = generator(seg, input_class)
+    output_D = discriminator(fake)
+
+    # Build batch dict for GAN loss
+    loss_batch = {
+        'synth': {
+            'disc_pred': output_D,
+            'seg': seg,  
+            'label_canny': edge,
+            'for_real': True,
+            'pred': fake,
+            'target': batch.images[1].to(device)
+        }
+    }
+
+    loss_G, metrics_G = loss_fn(loss_batch)
+
+    return fake, loss_G, metrics_G
+
+
+def synthesizer_D_step(
+    generator,
+    discriminator,
+    loss_fn,
+    batch,
+    device,
+    num_classes: int,
+):
+    seg, edge, input_class = prepare_synth_gan_inputs(batch, device, num_classes)
+    target = batch.images[1].to(device)
+
+    with torch.no_grad():
+        fake = generator(seg, input_class)
+
+    # Real
+    loss_batch_real = {
+        'synth': {
+            'disc_pred': discriminator(target),
+            'seg': seg,  
+            'label_canny': edge,
+            'for_real': True
+        }
+    }
+    loss_D_real, metrics_D_real = loss_fn(loss_batch_real)
+
+    # Fake
+    loss_batch_fake = {
+        'synth': {
+            'disc_pred': discriminator(fake.detach()),
+            'seg': seg, 
+            'label_canny': edge,
+            'for_real': False
+        }
+    }
+    loss_D_fake, metrics_D_fake = loss_fn(loss_batch_fake)
+
+    loss_D = loss_D_real + loss_D_fake
+    metrics_D = {}
+    for k, v in metrics_D_real.items():
+        metrics_D[f'real_{k}'] = v
+    for k, v in metrics_D_fake.items():
+        metrics_D[f'fake_{k}'] = v
+
+    return loss_D, metrics_D
+
+def run_synthesizer_gan(
+    generator,
+    discriminator,
+    loss_fn,
+    batch,
+    device,
+    optimizer_G: torch.optim.Optimizer | None,
+    optimizer_D: torch.optim.Optimizer | None,
+    training: bool = True,
+    num_classes: int = 6,
+):
+    generator.train(training)
+    discriminator.train(training)
+
+    grad_ctx = torch.enable_grad() if training else torch.no_grad()
+
+    loss_G_total = 0.0
+    loss_D_total = 0.0
+
+    with grad_ctx:
+        # Update Discriminator
+        if training and optimizer_D is not None:
+            optimizer_D.zero_grad(set_to_none=True)
+
+        loss_D, metrics_D = synthesizer_D_step(
+            generator, discriminator, loss_fn, batch, device, num_classes
+        )
+
+        if training and optimizer_D is not None:
+            loss_D.backward()
+            optimizer_D.step()
+
+        loss_D_total += loss_D.item()
+
+        # Update Generator
+        if training and optimizer_G is not None:
+            optimizer_G.zero_grad(set_to_none=True)
+
+        fake, loss_G, metrics_G = synthesizer_G_step(
+            generator, discriminator, loss_fn, batch, device, num_classes
+        )
+
+        if training and optimizer_G is not None:
+            loss_G.backward()
+            optimizer_G.step()
+
+        loss_G_total += loss_G.item()
+
+    return fake, loss_G_total, loss_D_total
+
+

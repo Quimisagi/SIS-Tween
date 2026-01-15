@@ -1,5 +1,4 @@
 from collections import defaultdict
-import random
 import torch
 from torch.utils.data import Dataset
 from torchvision import transforms
@@ -16,6 +15,7 @@ class TripletDataset(Dataset):
         image_transform=None,
         label_transform=None,
         apply_augmentation=False,
+        max_samples=None,
     ):
         self.loader = DatasetBase(root_dir, mode)
         self.image_transform = image_transform or transforms.ToTensor()
@@ -26,20 +26,27 @@ class TripletDataset(Dataset):
         self.classes = self.loader.classes
         self.class_to_idx = self.loader.class_to_idx
 
-        # --------------------------------------------------
-        # Build SAME-CLASS triplets only (drop-in fix)
-        # --------------------------------------------------
-        class_to_indices = defaultdict(list)
-        for i in range(len(self.loader)):
-            cls = self.loader[i]["class"]
-            class_to_indices[cls].append(i)
-
+        # --------------------------------------------
+        # Build SAME-CLASS CONSECUTIVE triplets
+        # --------------------------------------------
         self.triplet_indices = []
-        for cls, idxs in class_to_indices.items():
+        self.triplet_class = []
+
+        for class_id, idxs in self.loader.class_to_indices.items():
+            if len(idxs) < 3:
+                continue
+
+            # keep original order for consecutive triplets
             for i in range(len(idxs) - 2):
                 self.triplet_indices.append(
                     (idxs[i], idxs[i + 1], idxs[i + 2])
                 )
+                self.triplet_class.append(class_id)
+
+        # optionally limit number of triplets (DEV mode)
+        if max_samples is not None and len(self.triplet_indices) > max_samples:
+            self.triplet_indices = self.triplet_indices[:max_samples]
+            self.triplet_class = self.triplet_class[:max_samples]
 
     def __len__(self):
         return len(self.triplet_indices)
@@ -48,13 +55,11 @@ class TripletDataset(Dataset):
         i0, i1, i2 = self.triplet_indices[index]
         samples = [self.loader[i0], self.loader[i1], self.loader[i2]]
 
-        images  = [s["image"] for s in samples]
-        labels  = [s["label"] for s in samples]
-        edges   = [s["edge"]  for s in samples]
-        classes = [s["class"] for s in samples]
+        images = [s["image"] for s in samples]
+        labels = [s["label"] for s in samples]
+        edges  = [s["edge"]  for s in samples]
 
-        # sanity check (can remove after debugging)
-        assert len(set(classes)) == 1, f"Mixed-class triplet: {classes}"
+        cls = self.triplet_class[index]
 
         if self.apply_augmentation:
             images, labels, edges = self.augment_triplet(images, labels, edges)
@@ -70,15 +75,14 @@ class TripletDataset(Dataset):
             "images": images,
             "labels": labels,
             "edges": edges,
-            "class_index": torch.tensor(classes, dtype=torch.long),
+            "class_index": torch.tensor(cls, dtype=torch.long),
         }
 
     def augment_triplet(self, images, labels, edges):
-        do_hflip = random.random() < 0.35
-        angle = random.uniform(-10, 10)
+        do_hflip = torch.rand(1).item() < 0.35
+        angle = torch.empty(1).uniform_(-10, 10).item()
 
         out_images, out_labels, out_edges = [], [], []
-
         for img, lbl, edg in zip(images, labels, edges):
             if do_hflip:
                 img = TF.hflip(img)

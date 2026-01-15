@@ -37,7 +37,7 @@ class Synthesizer(nn.Module):
         for i in range(0, self.class_num):
             z = torch.randn(self.opt.batch_size,self.opt.z_dim, dtype=torch.float32,device=torch.device(context.device))
             z = z.view(z.size(0), self.opt.z_dim, 1, 1)
-            z = z.expand(z.size(0), self.opt.z_dim, 512, 512)
+            z = z.expand(z.size(0), self.opt.z_dim, opt.image_size, opt.image_size)
             self.const_inputs.append(nn.Parameter(z))
         # if opt.phase == "test":
         #     torch.save(self.const_inputs,"const_input_"+self.opt.name+".pt")
@@ -71,7 +71,7 @@ class Synthesizer(nn.Module):
 
 
     def compute_latent_vector_size(self, opt):
-        w = opt.crop_size // (2**(opt.num_res_blocks-1))
+        w = opt.image_size // (2**(opt.num_res_blocks-1))
         h = round(w / opt.aspect_ratio)
         return h, w
     def forward(self, seg, input_class):

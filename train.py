@@ -92,10 +92,14 @@ def train_fn(opt):
         tasks["synth"] = losses.CompositeLoss(
             {
                 "l1": (losses.L1Loss().to(device), 1.0),
-                "perceptual": (losses.PerceptualLoss().to(device), 0.1),
+                "gan": (losses.OASISGanLoss(opt, device), 0.1),
             }
         ).to(device)
-
+        tasks["disc"] = losses.CompositeLoss(
+            {
+                "gan": (losses.OASISGanLoss(opt, device), 1.0),
+            }
+        ).to(device)
     loss = losses.MultitaskLoss(**tasks)
 
     # ---- TensorBoard (rank 0 only) ----

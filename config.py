@@ -21,9 +21,8 @@ def get_parser(train: bool = True) -> argparse.ArgumentParser:
     parser.add_argument("--checkpoints_dir", type=str, default="./checkpoints")
     parser.add_argument("--num_workers", type=int, default=4)
     parser.add_argument("--distributed_enabled", default=False)
-    parser.add_argument("--crop_size", type=int, default=256)
     parser.add_argument("--aspect_ratio", type=float, default=1.0)
-    parser.add_argument("--semantic_nc", type=int, default=11)
+    parser.add_argument("--semantic_nc", type=int, default=6)
 
     # -------------------- Data --------------------
     parser.add_argument("--dataset_path", type=str, required=True)
@@ -38,7 +37,6 @@ def get_parser(train: bool = True) -> argparse.ArgumentParser:
     parser.add_argument("--save_interval", type=int, default=5)
 
     # -------------------- Model / Architecture --------------------
-    parser.add_argument("--num_seg_classes", type=int, default=6)
     parser.add_argument('--class_num', type=int, default=24)
     parser.add_argument("--segmentator_score_threshold", type=float, default=0.1)
     parser.add_argument("--autoencoder_path", type=str, default="")
@@ -48,7 +46,7 @@ def get_parser(train: bool = True) -> argparse.ArgumentParser:
     parser.add_argument("--channels_D", type=int, default=64)
     parser.add_argument("--param_free_norm", type=str, default="syncbatch")
     parser.add_argument("--spade_ks", type=int, default=3)
-    parser.add_argument("--z_dim", type=int, default=11)
+    parser.add_argument("--z_dim", type=int, default=6)
 
     parser.add_argument("--no_spectral_norm", action="store_true")
     parser.add_argument("--no_EMA", action="store_true")
@@ -70,15 +68,11 @@ def get_parser(train: bool = True) -> argparse.ArgumentParser:
     parser.add_argument("--lr_synth", type=float, default=1e-4)
     parser.add_argument("--lr_g", type=float, default=1e-4)
     parser.add_argument("--lr_d", type=float, default=4e-4)
-    parser.add_argument("--beta1", type=float, default=0.0)
-    parser.add_argument("--beta2", type=float, default=0.999)
 
     # -------------------- Losses --------------------
     parser.add_argument("--add_vgg_loss", action="store_true")
-    parser.add_argument("--lambda_vgg", type=float, default=10.0)
     parser.add_argument("--no_balancing_inloss", action="store_true", default=False)
     parser.add_argument("--no_labelmix", action="store_true", default=False)
-    parser.add_argument("--lambda_labelmix", type=float, default=10.0)
 
     # -------------------- Training Control --------------------
     if train:
@@ -95,16 +89,6 @@ def get_parser(train: bool = True) -> argparse.ArgumentParser:
         parser.add_argument("--ckpt_iter", type=str, default="best")
 
     return parser
-
-
-def set_dataset_defaults(opt, parser):
-    if opt.dataset_mode == "ade20k":
-        parser.set_defaults(lambda_labelmix=10.0, EMA_decay=0.9999)
-    elif opt.dataset_mode == "cityscapes":
-        parser.set_defaults(lr_g=4e-4, lambda_labelmix=5.0, freq_fid=2500, EMA_decay=0.999)
-    elif opt.dataset_mode == "coco":
-        parser.set_defaults(lambda_labelmix=10.0, EMA_decay=0.9999, epochs=100)
-
 
 def save_options(opt, parser):
     path = os.path.join(opt.checkpoints_dir, opt.name)
@@ -148,7 +132,6 @@ def read_arguments(train: bool = True):
     opt = parser.parse_args()
 
     if train:
-        set_dataset_defaults(opt, parser)
         if getattr(opt, "continue_train", False):
             prev = load_options(opt)
             for k, v in vars(prev).items():

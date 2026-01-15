@@ -11,6 +11,7 @@ class DatasetBase:
         if not os.path.isdir(train_img_root):
             raise FileNotFoundError(f"Missing train/images: {train_img_root}")
 
+        # class names and ids
         self.classes = sorted([
             d for d in os.listdir(train_img_root)
             if os.path.isdir(os.path.join(train_img_root, d))
@@ -21,11 +22,25 @@ class DatasetBase:
 
         self.class_to_idx = {c: i for i, c in enumerate(self.classes)}
 
+        # --------------------------------------------------
+        # METADATA-ONLY index (NO image loading)
+        # --------------------------------------------------
         self.samples = self._build_index()
+
+        # --------------------------------------------------
+        # Fast class → indices lookup (critical for speed)
+        # --------------------------------------------------
+        self.class_to_indices = {}
+        for i, s in enumerate(self.samples):
+            class_id = s[4]
+            self.class_to_indices.setdefault(class_id, []).append(i)
 
     def __len__(self):
         return len(self.samples)
 
+    # --------------------------------------------------
+    # FULL sample load (only used in __getitem__)
+    # --------------------------------------------------
     def __getitem__(self, index):
         img_path, lbl_path, edg_path, basename, class_id = self.samples[index]
 
@@ -41,6 +56,18 @@ class DatasetBase:
             "class": class_id,
         }
 
+    # --------------------------------------------------
+    # METADATA ACCESSORS (NO I/O)
+    # --------------------------------------------------
+    def get_class(self, index):
+        return self.samples[index][4]
+
+    def get_indices_by_class(self, class_id):
+        return self.class_to_indices.get(class_id, [])
+
+    # --------------------------------------------------
+    # Index builder (paths only)
+    # --------------------------------------------------
     def _build_index(self):
         samples = []
 
@@ -60,7 +87,11 @@ class DatasetBase:
                 lbl_dir = os.path.join(lbl_root, cls)
                 edge_dir = os.path.join(edge_root, cls)
 
-                if not (os.path.isdir(img_dir) and os.path.isdir(lbl_dir) and os.path.isdir(edge_dir)):
+                if not (
+                    os.path.isdir(img_dir)
+                    and os.path.isdir(lbl_dir)
+                    and os.path.isdir(edge_dir)
+                ):
                     continue
 
                 class_id = self.class_to_idx[cls]
