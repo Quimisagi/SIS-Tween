@@ -155,7 +155,7 @@ class Trainer:
 
 
     def log_step(self, stage, losses, batch=None, outputs=None):
-        if not self.context.writer or self.global_step % 100 != 0:
+        if not self.context.writer or self.global_step % 1000 != 0:
             return
         loss_str = " ".join(f"{k}={v:.4f}" for k, v in losses.items())
         self.context.logger.info(
@@ -175,13 +175,21 @@ class Trainer:
                 self.global_step,
                 "loss/interpolation",
             )
-        if "Synthesis" in losses:
+        if "Synthesis_G" in losses:
             visualization.plot(
                 self.context,
-                {"train": losses["Synthesis"]},
+                {"train": losses["Synthesis_G"]},
                 self.global_step,
-                "loss/synthesis",
+                "loss/synthesis_G",
             )
+        if "Synthesis_D" in losses:
+            visualization.plot(
+                self.context,
+                {"train": losses["Synthesis_D"]},
+                self.global_step,
+                "loss/synthesis_D",
+            )
+
         if batch is not None and outputs is not None:
             visualization.samples_comparison(
                 self.context,
@@ -192,31 +200,41 @@ class Trainer:
                 tag="samples",
             )
 
-    def stage1_warmup(self):
-        if not (self.seg or self.interp or self.synth):
+    def freeze(self, net):
+        if not net:
             return
-        if self.seg:
-            self.seg.train()
-        if self.interp:
-            self.interp.train()
-        if self.synth:
-            self.synth.train()
+        net.eval()
+        for p in net.parameters():
+            p.requires_grad = False
+
+    def unfreeze(self, net):
+        if not net:
+            return
+        net.train()
+        for p in net.parameters():
+            p.requires_grad = True
+
+    def stage1_warmup(self):
+        self.unfreeze(self.seg)
+        self.unfreeze(self.interp)
+        self.unfreeze(self.synth)
+        self.unfreeze(self.disc)
+
         for data in self.dataloaders.train:
             batch = self.make_batch(data)
+
             seg_out, loss_seg = self.forward_seg(
-                batch, optimizer=self.optimizers.get("seg")
+                batch, optimizer=self.optimizers["seg"]
             )
             interp_out, loss_interp = self.forward_interp(
-                batch, optimizer=self.optimizers.get("interp")
+                batch, optimizer=self.optimizers["interp"]
             )
-            # synth_out, loss_synth = self.forward_synth(
-            #     batch, optimizer=self.optimizers.get("synth")
-            # )
             fake_synth_out, loss_G, loss_D = self.forward_synth_gan(
                 batch,
-                optimizer_synth=self.optimizers.get("synth"),
-                optimizer_disc=self.optimizers.get("disc"),
+                optimizer_synth=self.optimizers["synth"],
+                optimizer_disc=self.optimizers["disc"],
             )
+
             self.log_step(
                 stage="Stage1",
                 losses={
@@ -225,74 +243,133 @@ class Trainer:
                     "Synthesis_G": loss_G,
                     "Synthesis_D": loss_D,
                 },
-                batch=batch,
                 outputs={"seg": seg_out, "interp": interp_out, "synth": fake_synth_out},
             )
             self.global_step += 1
 
     def stage2_frozen_seg(self):
-        if not self.interp:
-            return
-        if self.seg:
-            self.seg.eval()
-            for p in self.seg.parameters():
-                p.requires_grad = False
-        self.interp.train()
+        self.freeze(self.seg)
+        self.unfreeze(self.interp)
+        self.unfreeze(self.synth)
+        self.unfreeze(self.disc)
+
         for data in self.dataloaders.train:
             batch = self.make_batch(data)
-            seg_out, _ = self.forward_seg(batch, require_grad=False)
+
+            with torch.no_grad():
+                seg_out, _ = self.forward_seg(batch, require_grad=False)
+
             self.replace_labels_with_segmentation(batch, seg_out)
+
             interp_out, loss_interp = self.forward_interp(
-                batch, optimizer=self.optimizers.get("interp")
+                batch, optimizer=self.optimizers["interp"]
             )
+
+            fake_synth_out, loss_G, loss_D = self.forward_synth_gan(
+                batch,
+                optimizer_synth=self.optimizers["synth"],
+                optimizer_disc=self.optimizers["disc"],
+            )
+
             self.log_step(
                 stage="Stage2",
-                losses={"Interpolation": loss_interp},
-                batch=batch,
-                outputs={"seg": seg_out, "interp": interp_out},
+                losses={
+                    "Interpolation": loss_interp,
+                    "Synthesis_G": loss_G,
+                    "Synthesis_D": loss_D,
+                },
+                outputs={"seg": seg_out, "interp": interp_out, "synth": fake_synth_out},
             )
             self.global_step += 1
 
-    def stage3_joint_finetune(self):
-        if not (self.seg or self.interp):
-            return
-        if self.seg:
-            self.seg.train()
-        if self.interp:
-            self.interp.train()
+    def stage3_frozen_seg_and_interp(self):
+        # Freeze teachers
+        self.freeze(self.seg)
+        self.freeze(self.interp)
+
+        # Train GAN
+        self.unfreeze(self.synth)
+        self.unfreeze(self.disc)
+
         for data in self.dataloaders.train:
             batch = self.make_batch(data)
-            if self.optimizers.get("interp"):
-                self.optimizers["interp"].zero_grad()
-            if self.optimizers.get("seg"):
-                self.optimizers["seg"].zero_grad()
+
+            # Teacher segmentation (no grads)
+            with torch.no_grad():
+                seg_out, _ = self.forward_seg(batch, require_grad=False)
+
+            self.replace_labels_with_segmentation(batch, seg_out)
+
+            # GAN update
+            fake_synth_out, loss_G, loss_D = self.forward_synth_gan(
+                batch,
+                optimizer_synth=self.optimizers["synth"],
+                optimizer_disc=self.optimizers["disc"],
+            )
+
+            self.log_step(
+                stage="Stage3",
+                losses={
+                    "Synthesis_G": loss_G,
+                    "Synthesis_D": loss_D,
+                },
+                outputs={
+                    "seg": seg_out,
+                    "synth": fake_synth_out,
+                },
+            )
+            self.global_step += 1
+
+    def stage4_joint_finetune(self):
+        self.unfreeze(self.seg)
+        self.unfreeze(self.interp)
+        self.unfreeze(self.synth)
+        self.unfreeze(self.disc)
+
+        for data in self.dataloaders.train:
+            batch = self.make_batch(data)
+
+            for opt in ["seg", "interp", "synth", "disc"]:
+                self.optimizers[opt].zero_grad()
+
             seg_out, loss_seg = self.forward_seg(batch, optimizer=None)
             self.replace_labels_with_segmentation(batch, seg_out)
             interp_out, loss_interp = self.forward_interp(batch, optimizer=None)
-            total_loss = (self.opt.seg_weight * loss_seg if self.seg else 0.0) + (
-                self.opt.interp_weight * loss_interp if self.interp else 0.0
+
+            fake_synth_out, loss_G, loss_D = self.forward_synth_gan(
+                batch, optimizer_synth=None, optimizer_disc=None
             )
+
+            total_loss = (
+                self.opt.seg_weight * loss_seg
+                + self.opt.interp_weight * loss_interp
+                + self.opt.g_weight * loss_G
+                + self.opt.d_weight * loss_D
+            )
+
             total_loss.backward()
-            if self.optimizers.get("interp"):
-                self.optimizers["interp"].step()
-            if self.optimizers.get("seg"):
-                self.optimizers["seg"].step()
+
+            for opt in ["seg", "interp", "synth", "disc"]:
+                self.optimizers[opt].step()
+
             self.log_step(
-                stage="Stage3",
+                stage="Stage4",
                 losses={
                     "Total": total_loss,
                     "Segmentation": loss_seg,
                     "Interpolation": loss_interp,
+                    "Synthesis_G": loss_G,
+                    "Synthesis_D": loss_D,
                 },
             )
             self.global_step += 1
 
     def _log_validation(
-        self, avg_loss_seg, avg_loss_interp, avg_dice_seg, avg_dice_interp
+        self, avg_loss_seg, avg_loss_interp, avg_loss_G, avg_loss_D, avg_dice_seg, avg_dice_interp
     ):
         if self.context.logger:
             self.context.logger.info(
-                f"[Validation] Seg_Loss={avg_loss_seg:.4f}, Interp_Loss={avg_loss_interp:.4f}, Seg_Dice={avg_dice_seg:.4f}, Interp_Dice={avg_dice_interp:.4f}"
+                    f"[Validation] Seg_Loss={avg_loss_seg:.4f}, Interp_Loss={avg_loss_interp:.4f}, Synth_G_Loss={avg_loss_G:.4f}, Synth_D_Loss={avg_loss_D:.4f}, Dice_Seg={avg_dice_seg:.4f}, Dice_Interp={avg_dice_interp:.4f}"
             )
         if self.context.writer:
             visualization.plot(
@@ -309,23 +386,38 @@ class Trainer:
             )
             visualization.plot(
                 self.context,
+                {"validation": avg_loss_G},
+                self.global_step,
+                "loss/synthesis_G",
+                )
+            visualization.plot(
+                self.context,
+                {"validation": avg_loss_D},
+                self.global_step,
+                "loss/synthesis_D",
+                )
+
+            visualization.plot(
+                self.context,
                 {"validation": avg_loss_interp},
                 self.global_step,
                 "loss/interpolation",
             )
 
     def validate(self):
-        total_loss_seg = total_loss_interp = total_dice_seg = total_dice_interp = 0.0
+        total_loss_seg = total_loss_interp = total_loss_G = total_loss_D = total_dice_seg = total_dice_interp = 0.0
         n_batches = len(self.dataloaders.val)
         with torch.no_grad():
             for data in self.dataloaders.val:
                 batch = self.make_batch(data)
                 seg_out, loss_seg = self.forward_seg(batch)
                 interp_out, loss_interp = self.forward_interp(batch)
-                fake_synth_out, _, _ = self.forward_synth_gan(batch)
-                outputs = {"seg": seg_out, "interp": interp_out}
+                fake_synth_out, loss_G, loss_D = self.forward_synth_gan(batch)
+                outputs = {"seg": seg_out, "interp": interp_out, "synth": fake_synth_out}
                 total_loss_seg += loss_seg
                 total_loss_interp += loss_interp
+                total_loss_G += loss_G
+                total_loss_D += loss_D
                 if seg_out is not None:
                     for i in range(len(seg_out)):
                         pred = seg_out[i].detach()
@@ -346,33 +438,64 @@ class Trainer:
                     )
         avg_loss_seg = total_loss_seg / n_batches
         avg_loss_interp = total_loss_interp / n_batches
+        avg_loss_synth_G = total_loss_G / n_batches
+        avg_loss_synth_D = total_loss_D / n_batches
         avg_dice_seg = total_dice_seg / (n_batches * 3) if self.seg else 0.0
         avg_dice_interp = total_dice_interp / n_batches if self.interp else 0.0
         self._log_validation(
-            avg_loss_seg, avg_loss_interp, avg_dice_seg, avg_dice_interp
+            avg_loss_seg, avg_loss_interp, avg_loss_synth_G, avg_loss_synth_D, avg_dice_seg, avg_dice_interp
         )
-        return avg_loss_seg, avg_loss_interp, avg_dice_seg
+        return avg_loss_seg, avg_loss_interp, avg_loss_synth_G, avg_loss_synth_D, avg_dice_seg
 
     def train(self):
+        seg_val_history = deque(maxlen=5)
         interp_val_history = deque(maxlen=5)
+        synth_val_history = deque(maxlen=5)
+
         for self.epoch in range(self.opt.epochs):
             if isinstance(self.dataloaders.train.sampler, DistributedSampler):
                 self.dataloaders.train.sampler.set_epoch(self.epoch)
+
             for s in self.schedulers.values():
                 s.step()
-            # if self.train_stage == 0:
-            #     self.stage1_warmup()
-            # elif self.train_stage == 1:
-            #     self.stage2_frozen_seg()
-            # else:
-                # self.stage3_joint_finetune()
-            self.stage1_warmup()
-            val_loss_seg, val_loss_interp, dice = self.validate()
-            if self.train_stage == 0 and dice > self.opt.segmentator_score_threshold:
-                self.train_stage = 1
+
+            # -------- TRAIN --------
+            if self.train_stage == 0:
+                self.stage1_warmup()
+            elif self.train_stage == 1:
+                self.stage2_frozen_seg()
+            elif self.train_stage == 2:
+                self.stage3_frozen_seg_and_interp()
+            elif self.train_stage == 3:
+                self.stage4_joint_finetune()
+
+            # -------- VALIDATE --------
+            val_loss_seg, val_loss_interp, val_loss_synth_G, val_loss_synth_D, dice = self.validate()
+
+            # -------- STAGE TRANSITIONS --------
+
+            if self.train_stage == 0:
+                seg_val_history.append(val_loss_seg)
+                if len(seg_val_history) == seg_val_history.maxlen:
+                    ri = self.relative_improvement(seg_val_history)
+                    if ri < 0.01:
+                        self.train_stage = 1
+                        interp_val_history.clear()
+                        continue
+
             if self.train_stage == 1:
                 interp_val_history.append(val_loss_interp)
                 if len(interp_val_history) == interp_val_history.maxlen:
                     ri = self.relative_improvement(interp_val_history)
                     if ri < 0.01:
                         self.train_stage = 2
+                        synth_val_history.clear()
+                        continue
+
+            if self.train_stage == 2:
+                synth_val_history.append(val_loss_synth_G)
+                if len(synth_val_history) == synth_val_history.maxlen:
+                    ri = self.relative_improvement(synth_val_history)
+                    if ri < 0.01:
+                        self.train_stage = 3
+                        continue

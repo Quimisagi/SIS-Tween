@@ -121,6 +121,61 @@ class FocalLoss(BaseLoss):
         return loss, {"focal": loss}
 
 
+class VGGLoss(BaseLoss):
+    def __init__(
+        self,
+        vgg: nn.Module,
+        layer_weights: list[float] | None = None,
+        reduction: str = "mean",
+        detach_target: bool = True,
+    ):
+        """
+        Args:
+            vgg: feature extractor returning List[Tensor]
+            layer_weights: weight per VGG layer
+            reduction: "mean" or "sum"
+            detach_target: whether to stop gradients on target features
+        """
+        super().__init__()
+
+        self.vgg = vgg
+        self.criterion = nn.L1Loss(reduction=reduction)
+        self.detach_target = detach_target
+
+        if layer_weights is None:
+            self.layer_weights = [1.0 / 32, 1.0 / 16, 1.0 / 8, 1.0 / 4, 1.0]
+        else:
+            self.layer_weights = layer_weights
+
+    def forward(self, pred: torch.Tensor, target: torch.Tensor):
+        """
+        pred:   (B, 3, H, W) generated image
+        target: (B, 3, H, W) reference image
+        """
+        pred_feats = self.vgg(pred)
+        target_feats = self.vgg(target)
+
+        total_loss = 0.0
+        layer_losses = {}
+
+        for i, (pf, tf, w) in enumerate(
+            zip(pred_feats, target_feats, self.layer_weights)
+        ):
+            if self.detach_target:
+                tf = tf.detach()
+
+            l = self.criterion(pf, tf)
+            total_loss += w * l
+            layer_losses[f"vgg_l{i}"] = l
+
+        metrics = {
+            "vgg": total_loss,
+            **layer_losses,
+        }
+
+        return total_loss, metrics
+
+
 class PerceptualLoss(BaseLoss):
     def __init__(self):
         super().__init__()

@@ -8,6 +8,7 @@ from engine import losses, Trainer, RuntimeContext, DataloaderBundle
 from logs.logger import init_logger
 
 from config import read_arguments
+from models import VGG19
 
 
 def train_fn(opt):
@@ -92,6 +93,7 @@ def train_fn(opt):
         tasks["synth"] = losses.CompositeLoss(
             {
                 "l1": (losses.L1Loss().to(device), 1.0),
+                "vgg": (losses.VGGLoss(vgg=VGG19()).to(device), 1.0),
                 "gan": (losses.OASISGanLoss(opt, device), 0.1),
             }
         ).to(device)
