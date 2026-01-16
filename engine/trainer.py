@@ -181,7 +181,7 @@ class Trainer:
             return None, 0.0
         return run_synthesizer(self.synth, self.loss_fn, batch, self.device, optimizer)
 
-    def forward_synth_gan(self, batch, optimizer_synth=None, optimizer_disc=None):
+    def forward_synth_gan(self, batch, optimizer_synth=None, optimizer_disc=None, training=True):
         if not self.synth or not self.disc:
             return None, 0.0, 0.0
         return run_synthesizer_gan(
@@ -192,6 +192,7 @@ class Trainer:
             self.device,
             optimizer_synth,
             optimizer_disc,
+            training=training,  
         )
 
 
@@ -486,7 +487,7 @@ class Trainer:
 
                 seg_out, loss_seg = self.forward_seg(batch)
                 interp_out, loss_interp = self.forward_interp(batch)
-                fake_synth_out, loss_G, loss_D = self.forward_synth_gan(batch)
+                fake_synth_out, loss_G, loss_D = self.forward_synth_gan(batch, training=False)
 
                 outputs = {
                     "seg": seg_out,
@@ -495,10 +496,10 @@ class Trainer:
                 }
 
                 # ---- accumulate losses ----
-                totals["loss"]["seg"] += loss_seg
-                totals["loss"]["interp"] += loss_interp
-                totals["loss"]["synth_G"] += loss_G
-                totals["loss"]["synth_D"] += loss_D
+                totals["loss"]["seg"] += 0
+                totals["loss"]["interp"] += 0
+                totals["loss"]["synth_G"] += 0
+                totals["loss"]["synth_D"] += 0
 
                 # ---- accumulate metrics ----
                 if seg_out is not None:
@@ -518,7 +519,7 @@ class Trainer:
                         batch.images[1].to(self.device),
                         max_val=1.0,
                     )
-                    totals["psnr"]["synth"] += psnr_value
+                    totals["psnr"]["synth"] += psnr_value.item()
 
                 # ---- visualization ----
                 if self.context.writer:
