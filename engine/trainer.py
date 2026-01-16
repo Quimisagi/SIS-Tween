@@ -153,6 +153,13 @@ class Trainer:
         if interp_output is not None:
             batch.labels[1] = interp_output.detach().argmax(dim=1)
 
+    def safe_detach(self, x):
+        if x is None:
+            return None
+        if isinstance(x, list):
+            return [t.detach().cpu() for t in x]
+        return x.detach().cpu()
+
 
     def forward_seg(self, batch, optimizer=None, require_grad=True):
         if not self.seg:
@@ -223,6 +230,10 @@ class Trainer:
                 "loss/synthesis_D",
             )
 
+        outputs = {
+                k: self.safe_detach(v) for k, v in (outputs or {}).items()
+        }
+
         if batch is not None and outputs is not None:
             visualization.samples_comparison(
                 self.context,
@@ -276,9 +287,11 @@ class Trainer:
                     "Synthesis_G": loss_G,
                     "Synthesis_D": loss_D,
                 },
-                outputs={"seg": seg_out, "interp": interp_out, "synth": fake_synth_out},
-                batch=batch,
-            )
+            outputs = {
+                "seg": [seg.detach().cpu() for seg in seg_out] if seg_out is not None else None,
+                "interp": interp_out.detach().cpu() if interp_out is not None else None,
+                "synth": fake_synth_out.detach().cpu() if fake_synth_out is not None else None,
+            })
             self.global_step += 1
 
     def stage2_frozen_seg(self):
@@ -371,7 +384,7 @@ class Trainer:
             batch = self.make_batch(data)
 
             for opt in ["seg", "interp", "synth", "disc"]:
-                self.optimizers[opt].zero_grad()
+                self.optimizers[opt].zero_grad(set_to_none=True)
 
             seg_out, loss_seg = self.forward_seg(batch, optimizer=None)
             self.replace_labels_with_segmentation(batch, seg_out)
@@ -467,30 +480,24 @@ class Trainer:
         }
 
         with torch.no_grad():
-            for data in self.dataloaders.val:
+            for i, data in enumerate(self.dataloaders.val):
                 batch = self.make_batch(data)
 
                 seg_out, loss_seg = self.forward_seg(batch)
                 interp_out, loss_interp = self.forward_interp(batch)
                 fake_synth_out, loss_G, loss_D = self.forward_synth_gan(batch)
 
-                outputs = {
-                    "seg": seg_out,
-                    "interp": interp_out,
-                    "synth": fake_synth_out,
-                }
+                # ---- accumulate losses (ensure Python floats) ----
+                totals["loss"]["seg"] += float(loss_seg)
+                totals["loss"]["interp"] += float(loss_interp)
+                totals["loss"]["synth_G"] += float(loss_G)
+                totals["loss"]["synth_D"] += float(loss_D)
 
-                # ---- accumulate losses ----
-                totals["loss"]["seg"] += loss_seg
-                totals["loss"]["interp"] += loss_interp
-                totals["loss"]["synth_G"] += loss_G
-                totals["loss"]["synth_D"] += loss_D
-
-                # ---- accumulate metrics ----
+                # ---- accumulate metrics (item() immediately) ----
                 if seg_out is not None:
-                    for i in range(len(seg_out)):
-                        pred = seg_out[i].detach()
-                        target = batch.labels[i].squeeze(1).long()
+                    for j in range(len(seg_out)):
+                        pred = seg_out[j]
+                        target = batch.labels[j].squeeze(1).long()
                         totals["dice"]["seg"] += dice_score_multiclass(pred, target)
 
                 if interp_out is not None:
@@ -498,60 +505,58 @@ class Trainer:
                         interp_out,
                         batch.labels[1].squeeze(1).long(),
                     )
-                if fake_synth_out is not None:
-                    psnr_value = psnr(
-                        fake_synth_out,
-                        batch.images[1].to(self.device),
-                        max_val=1.0,
-                    )
-                    totals["psnr"]["synth"] += psnr_value
 
-                # ---- visualization ----
-                if self.context.writer:
+                if fake_synth_out is not None:
+                    totals["psnr"]["synth"] += psnr(
+                        fake_synth_out,
+                        batch.images[1],
+                        max_val=1.0,
+                    ).item()
+
+                # ---- visualize ONLY first batch, CPU-only tensors ----
+                if i == 0 and self.context.writer:
                     visualization.samples_comparison(
                         self.context,
-                        batch.images,
-                        batch.labels,
-                        outputs,
+                        self.safe_detach(batch.images),
+                        self.safe_detach(batch.labels),
+                        {
+                            "seg": self.safe_detach(seg_out),
+                            "interp": self.safe_detach(interp_out),
+                            "synth": self.safe_detach(fake_synth_out),
+                        },
                         self.global_step,
                         tag="val_samples",
                     )
 
-        # ---- averages ----
-        metrics = {
-            "loss": {
-                "seg": totals["loss"]["seg"] / n_batches,
-                "interp": totals["loss"]["interp"] / n_batches,
-                "synth_G": totals["loss"]["synth_G"] / n_batches,
-                "synth_D": totals["loss"]["synth_D"] / n_batches,
-            },
-            "dice": {
-                "seg": (
-                    totals["dice"]["seg"] / (n_batches * 3)
-                    if self.seg else 0.0
-                ),
-                "interp": (
-                    totals["dice"]["interp"] / n_batches
-                    if self.interp else 0.0
-                ),
-            },
-            "psnr": {
-                "synth": (
-                    totals["psnr"]["synth"] / n_batches
-                    if self.synth else 0.0
-                ),
-            },
-        }
+                # ---- explicit cleanup ----
+                del seg_out, interp_out, fake_synth_out, batch
 
-        # ---- logging ----
-        self._log_validation(
-            metrics["loss"]["seg"],
-            metrics["loss"]["interp"],
-            metrics["loss"]["synth_G"],
-            metrics["loss"]["synth_D"],
-            metrics["dice"]["seg"],
-            metrics["dice"]["interp"],
-        )
+            # ---- averages ----
+            metrics = {
+                "loss": {
+                    "seg": totals["loss"]["seg"] / n_batches,
+                    "interp": totals["loss"]["interp"] / n_batches,
+                    "synth_G": totals["loss"]["synth_G"] / n_batches,
+                    "synth_D": totals["loss"]["synth_D"] / n_batches,
+                },
+                "dice": {
+                    "seg": (totals["dice"]["seg"] / (n_batches * 3)) if self.seg else 0.0,
+                    "interp": (totals["dice"]["interp"] / n_batches) if self.interp else 0.0,
+                },
+                "psnr": {
+                    "synth": (totals["psnr"]["synth"] / n_batches) if self.synth else 0.0,
+                },
+            }
+
+            # ---- logging ----
+            self._log_validation(
+                metrics["loss"]["seg"],
+                metrics["loss"]["interp"],
+                metrics["loss"]["synth_G"],
+                metrics["loss"]["synth_D"],
+                metrics["dice"]["seg"],
+                metrics["dice"]["interp"],
+            )
 
         return metrics
 
