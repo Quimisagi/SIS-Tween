@@ -6,7 +6,7 @@ from models import Interpolator, Segmentator, Synthesizer, Discriminator
 from utils import visualization
 from utils.psnr import psnr
 from .bundles import Batch
-from .training_steps import run_segmentator, run_interpolator, run_synthesizer, run_synthesizer_gan
+from .training_steps import run_segmentator, run_interpolator, run_synthesizer_gan
 from collections import deque
 from utils.dice_score import dice_score_multiclass
 
@@ -144,7 +144,7 @@ class Trainer:
 
         stability = 1.0 / (1.0 + coeff_variation)
 
-        return improvement * stability
+        return abs(improvement * stability)
 
     def replace_labels_with_segmentation(self, batch: Batch, seg_output):
         if seg_output is not None:
@@ -600,6 +600,7 @@ class Trainer:
                 if len(seg_val_history) == seg_val_history.maxlen:
                     ri = self.relative_improvement(seg_val_history)
                     if ri < 0.01:
+                        self.context.logger.info(f"Segmentation converged with RI={ri:.4f}. Moving to Stage 2.")
                         self.train_stage = 1
                         interp_val_history.clear()
                         continue
@@ -609,6 +610,7 @@ class Trainer:
                 if len(interp_val_history) == interp_val_history.maxlen:
                     ri = self.relative_improvement(interp_val_history)
                     if ri < 0.01:
+                        self.context.logger.info(f"Interpolation converged with RI={ri:.4f}. Moving to Stage 3.")
                         self.train_stage = 2
                         synth_val_history.clear()
                         continue
@@ -618,6 +620,7 @@ class Trainer:
                 if len(synth_val_history) == synth_val_history.maxlen:
                     ri = self.relative_improvement(synth_val_history)
                     if ri < 0.01:
+                        self.context.logger.info(f"Synthesis converged with RI={ri:.4f}. Moving to Stage 4.")
                         self.train_stage = 3
                         continue
             if self.train_stage == 3:
@@ -626,6 +629,6 @@ class Trainer:
                     ri = self.relative_improvement(final_val_history)
                     if ri < 0.01:
                         self.context.logger.info(
-                            "Training converged. Stopping."
+                                f"Training converged. Stopping training with RI={ri:.4f}."
                         )
                         break

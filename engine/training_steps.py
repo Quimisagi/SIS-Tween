@@ -15,7 +15,6 @@ def prepare_label(label, device, num_classes: int):
         .float()
     )
 
-
 def prepare_interp_input(label, image, device, num_classes: int):
     label = prepare_label(label, device, num_classes)
     image = image.to(device)
@@ -102,29 +101,24 @@ def run_segmentator(
     grad_ctx = torch.enable_grad() if training else torch.no_grad()
 
     outputs = []
-    total_loss = torch.zeros((), device=device)
+    total_loss = 0.0
 
     with grad_ctx:
-        # Zero once per batch
-        if training and optimizer is not None:
-            optimizer.zero_grad(set_to_none=True)
-
         for img, lbl in zip(batch.images, batch.labels):
-            out, loss = segmentator_step(
-                model, loss_fn, img, lbl, device, num_classes
-            )
+            if training and optimizer is not None:
+                optimizer.zero_grad(set_to_none=True)
+
+            out, loss = segmentator_step(model, loss_fn, img, lbl, device, num_classes)
+
+            if training and optimizer is not None:
+                loss.backward()
+                optimizer.step()
 
             outputs.append(out.detach())
-            total_loss = total_loss + loss
+            total_loss += loss.item()
 
-        mean_loss = total_loss / len(batch.images)
+    return outputs, total_loss / len(batch.images)
 
-        # Single backward + step for the whole batch
-        if training and optimizer is not None:
-            mean_loss.backward()
-            optimizer.step()
-
-    return outputs, mean_loss
 
 
 # -----------------------------
@@ -193,59 +187,6 @@ def run_interpolator(
 # -----------------------------
 # Synthesizer
 # -----------------------------
-
-
-def synthesizer_step(
-    model,
-    loss_fn,
-    batch,
-    device,
-    num_classes: int,
-):
-    seg, input_class = prepare_synth_inputs(batch, device, num_classes)
-    target = batch.images[1].to(device)
-
-    # SPADE Synthesizer signature: forward(seg, input_class)
-    output = model(seg, input_class)
-
-    loss, metrics = loss_fn(
-        batch={
-            "synth": {
-                "pred": output,
-                "target": target,
-            }
-        }
-    )
-
-    assert torch.isfinite(loss)
-    return output, loss
-
-
-def run_synthesizer(
-    model,
-    loss_fn,
-    batch,
-    device,
-    optimizer: torch.optim.Optimizer | None,
-    training: bool = True,
-    num_classes: int = 6,
-):
-    model.train(training)
-
-    grad_ctx = torch.enable_grad() if training else torch.no_grad()
-
-    with grad_ctx:
-        if training and optimizer is not None:
-            optimizer.zero_grad(set_to_none=True)
-
-        output, loss = synthesizer_step(model, loss_fn, batch, device, num_classes)
-
-        if training and optimizer is not None:
-            loss.backward()
-            optimizer.step()
-
-    return output.detach(), loss.item()
-
 
 def synthesizer_G_step(
     generator,
@@ -338,10 +279,11 @@ def run_synthesizer_gan(
 
     grad_ctx = torch.enable_grad() if training else torch.no_grad()
 
+    loss_G_total = 0.0
+    loss_D_total = 0.0
+
     with grad_ctx:
-        # ------------------
-        # Discriminator step
-        # ------------------
+        # Update Discriminator
         if training and optimizer_D is not None:
             optimizer_D.zero_grad(set_to_none=True)
 
@@ -353,9 +295,9 @@ def run_synthesizer_gan(
             loss_D.backward()
             optimizer_D.step()
 
-        # ------------------
-        # Generator step
-        # ------------------
+        loss_D_total += loss_D.item()
+
+        # Update Generator
         if training and optimizer_G is not None:
             optimizer_G.zero_grad(set_to_none=True)
 
@@ -367,4 +309,6 @@ def run_synthesizer_gan(
             loss_G.backward()
             optimizer_G.step()
 
-    return fake, loss_G, loss_D
+        loss_G_total += loss_G.item()
+
+    return fake, loss_G_total, loss_D_total

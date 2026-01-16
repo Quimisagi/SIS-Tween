@@ -28,7 +28,7 @@ def get_parser(train: bool = True) -> argparse.ArgumentParser:
     parser.add_argument("--dataset_path", type=str, required=True)
     parser.add_argument("--dataset_mode", type=str, default="coco")
     parser.add_argument("--image_size", type=int, default=256)
-    parser.add_argument("--batch_size", type=int, default=4)
+    parser.add_argument("--batch_size", type=int, default=8)
     parser.add_argument("--no_flip", action="store_true")
 
     # -------------------- Saving / Logging --------------------

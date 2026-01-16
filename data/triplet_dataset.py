@@ -15,7 +15,7 @@ class TripletDataset(Dataset):
         image_transform=None,
         label_transform=None,
         apply_augmentation=False,
-        max_samples=None,
+        max_samples=100,
     ):
         self.loader = DatasetBase(root_dir, mode)
         self.image_transform = image_transform or transforms.ToTensor()
