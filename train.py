@@ -116,6 +116,7 @@ def train_fn(opt):
         writer=writer,
         logger=logger,
         world_size=world_size,
+        local_rank=local_rank,
     )
 
     dataloaders = DataloaderBundle(

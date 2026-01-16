@@ -10,6 +10,7 @@ class RuntimeContext:
     world_size: int
     writer: Any
     logger: Any
+    local_rank: int
 
 
 @dataclass

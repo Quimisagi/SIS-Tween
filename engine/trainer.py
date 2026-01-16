@@ -43,19 +43,19 @@ class Trainer:
         if opt.distributed_enabled and context.world_size > 1:
             if self.seg:
                 self.seg = DistributedDataParallel(
-                    self.seg, device_ids=[opt.local_rank]
+                    self.seg, device_ids=[context.local_rank]
                 )
             if self.interp:
                 self.interp = DistributedDataParallel(
-                    self.interp, device_ids=[opt.local_rank]
+                    self.interp, device_ids=[context.local_rank]
                 )
             if self.synth:
                 self.synth = DistributedDataParallel(
-                    self.synth, device_ids=[opt.local_rank]
+                    self.synth, device_ids=[context.local_rank]
                 )
             if self.disc:
                 self.disc = DistributedDataParallel(
-                    self.disc, device_ids=[opt.local_rank]
+                    self.disc, device_ids=[context.local_rank]
                 )
 
         self.optimizers = {}
