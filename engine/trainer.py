@@ -122,6 +122,7 @@ class Trainer:
             stability   = 1 / (1 + coeff_variation)
         """
         n = len(values)
+        values = list(values)
         if n < 2:
             return 0.0
 
@@ -480,24 +481,30 @@ class Trainer:
         }
 
         with torch.no_grad():
-            for i, data in enumerate(self.dataloaders.val):
+            for data in self.dataloaders.val:
                 batch = self.make_batch(data)
 
                 seg_out, loss_seg = self.forward_seg(batch)
                 interp_out, loss_interp = self.forward_interp(batch)
                 fake_synth_out, loss_G, loss_D = self.forward_synth_gan(batch)
 
-                # ---- accumulate losses (ensure Python floats) ----
-                totals["loss"]["seg"] += float(loss_seg)
-                totals["loss"]["interp"] += float(loss_interp)
-                totals["loss"]["synth_G"] += float(loss_G)
-                totals["loss"]["synth_D"] += float(loss_D)
+                outputs = {
+                    "seg": seg_out,
+                    "interp": interp_out,
+                    "synth": fake_synth_out,
+                }
 
-                # ---- accumulate metrics (item() immediately) ----
+                # ---- accumulate losses ----
+                totals["loss"]["seg"] += loss_seg
+                totals["loss"]["interp"] += loss_interp
+                totals["loss"]["synth_G"] += loss_G
+                totals["loss"]["synth_D"] += loss_D
+
+                # ---- accumulate metrics ----
                 if seg_out is not None:
-                    for j in range(len(seg_out)):
-                        pred = seg_out[j]
-                        target = batch.labels[j].squeeze(1).long()
+                    for i in range(len(seg_out)):
+                        pred = seg_out[i].detach()
+                        target = batch.labels[i].squeeze(1).long()
                         totals["dice"]["seg"] += dice_score_multiclass(pred, target)
 
                 if interp_out is not None:
@@ -505,58 +512,60 @@ class Trainer:
                         interp_out,
                         batch.labels[1].squeeze(1).long(),
                     )
-
                 if fake_synth_out is not None:
-                    totals["psnr"]["synth"] += psnr(
+                    psnr_value = psnr(
                         fake_synth_out,
-                        batch.images[1],
+                        batch.images[1].to(self.device),
                         max_val=1.0,
-                    ).item()
+                    )
+                    totals["psnr"]["synth"] += psnr_value
 
-                # ---- visualize ONLY first batch, CPU-only tensors ----
-                if i == 0 and self.context.writer:
+                # ---- visualization ----
+                if self.context.writer:
                     visualization.samples_comparison(
                         self.context,
-                        self.safe_detach(batch.images),
-                        self.safe_detach(batch.labels),
-                        {
-                            "seg": self.safe_detach(seg_out),
-                            "interp": self.safe_detach(interp_out),
-                            "synth": self.safe_detach(fake_synth_out),
-                        },
+                        batch.images,
+                        batch.labels,
+                        outputs,
                         self.global_step,
                         tag="val_samples",
                     )
 
-                # ---- explicit cleanup ----
-                del seg_out, interp_out, fake_synth_out, batch
+        # ---- averages ----
+        metrics = {
+            "loss": {
+                "seg": totals["loss"]["seg"] / n_batches,
+                "interp": totals["loss"]["interp"] / n_batches,
+                "synth_G": totals["loss"]["synth_G"] / n_batches,
+                "synth_D": totals["loss"]["synth_D"] / n_batches,
+            },
+            "dice": {
+                "seg": (
+                    totals["dice"]["seg"] / (n_batches * 3)
+                    if self.seg else 0.0
+                ),
+                "interp": (
+                    totals["dice"]["interp"] / n_batches
+                    if self.interp else 0.0
+                ),
+            },
+            "psnr": {
+                "synth": (
+                    totals["psnr"]["synth"] / n_batches
+                    if self.synth else 0.0
+                ),
+            },
+        }
 
-            # ---- averages ----
-            metrics = {
-                "loss": {
-                    "seg": totals["loss"]["seg"] / n_batches,
-                    "interp": totals["loss"]["interp"] / n_batches,
-                    "synth_G": totals["loss"]["synth_G"] / n_batches,
-                    "synth_D": totals["loss"]["synth_D"] / n_batches,
-                },
-                "dice": {
-                    "seg": (totals["dice"]["seg"] / (n_batches * 3)) if self.seg else 0.0,
-                    "interp": (totals["dice"]["interp"] / n_batches) if self.interp else 0.0,
-                },
-                "psnr": {
-                    "synth": (totals["psnr"]["synth"] / n_batches) if self.synth else 0.0,
-                },
-            }
-
-            # ---- logging ----
-            self._log_validation(
-                metrics["loss"]["seg"],
-                metrics["loss"]["interp"],
-                metrics["loss"]["synth_G"],
-                metrics["loss"]["synth_D"],
-                metrics["dice"]["seg"],
-                metrics["dice"]["interp"],
-            )
+        # ---- logging ----
+        self._log_validation(
+            metrics["loss"]["seg"],
+            metrics["loss"]["interp"],
+            metrics["loss"]["synth_G"],
+            metrics["loss"]["synth_D"],
+            metrics["dice"]["seg"],
+            metrics["dice"]["interp"],
+        )
 
         return metrics
 
@@ -564,6 +573,7 @@ class Trainer:
         seg_val_history = deque(maxlen=5)
         interp_val_history = deque(maxlen=5)
         synth_val_history = deque(maxlen=5)
+        final_val_history = deque(maxlen=10)
 
         for self.epoch in range(self.opt.epochs):
             if isinstance(self.dataloaders.train.sampler, DistributedSampler):
@@ -612,3 +622,12 @@ class Trainer:
                     if ri < 0.01:
                         self.train_stage = 3
                         continue
+            if self.train_stage == 3:
+                final_val_history.append(val_metrics["psnr"]["synth"])
+                if len(final_val_history) == final_val_history.maxlen:
+                    ri = self.relative_improvement(final_val_history)
+                    if ri < 0.01:
+                        self.context.logger.info(
+                            "Training converged. Stopping."
+                        )
+                        break
