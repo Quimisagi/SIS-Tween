@@ -289,7 +289,8 @@ class Trainer:
                 "seg": [seg.detach().cpu() for seg in seg_out] if seg_out is not None else None,
                 "interp": interp_out.detach().cpu() if interp_out is not None else None,
                 "synth": fake_synth_out.detach().cpu() if fake_synth_out is not None else None,
-            })
+            },
+            batch=batch)
             self.global_step += 1
 
     def stage2_frozen_seg(self):
@@ -492,10 +493,10 @@ class Trainer:
                 }
 
                 # ---- accumulate losses ----
-                totals["loss"]["seg"] += 0
-                totals["loss"]["interp"] += 0
-                totals["loss"]["synth_G"] += 0
-                totals["loss"]["synth_D"] += 0
+                totals["loss"]["seg"] += float(loss_seg)
+                totals["loss"]["interp"] += float(loss_interp)
+                totals["loss"]["synth_G"] += float(loss_G)
+                totals["loss"]["synth_D"] += float(loss_D)
 
                 # ---- accumulate metrics ----
                 if seg_out is not None:
