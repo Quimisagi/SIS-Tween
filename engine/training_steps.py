@@ -101,7 +101,7 @@ def run_segmentator(
     grad_ctx = torch.enable_grad() if training else torch.no_grad()
 
     outputs = []
-    total_loss = 0.0
+    total_loss = torch.tensor(0.0, device=device)  # keep as tensor
 
     with grad_ctx:
         for img, lbl in zip(batch.images, batch.labels):
@@ -110,14 +110,15 @@ def run_segmentator(
 
             out, loss = segmentator_step(model, loss_fn, img, lbl, device, num_classes)
 
-            if training and optimizer is not None:
-                loss.backward()
-                optimizer.step()
-
             outputs.append(out.detach())
-            total_loss += loss.item()
+            total_loss += loss  # accumulate tensor, not float
 
-    return outputs, total_loss / len(batch.images)
+    total_loss = total_loss / len(batch.images)
+    if training and optimizer is not None:
+        total_loss.backward()
+        optimizer.step()
+
+    return outputs, total_loss
 
 
 
@@ -295,7 +296,7 @@ def run_synthesizer_gan(
             loss_D.backward()
             optimizer_D.step()
 
-        loss_D_total += loss_D.item()
+        loss_D_total += loss_D
 
         # Update Generator
         if training and optimizer_G is not None:
@@ -309,6 +310,6 @@ def run_synthesizer_gan(
             loss_G.backward()
             optimizer_G.step()
 
-        loss_G_total += loss_G.item()
+        loss_G_total += loss_G
 
     return fake, loss_G_total, loss_D_total
