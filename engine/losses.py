@@ -64,6 +64,43 @@ class MulticlassDiceLoss(BaseLoss):
 
         return loss, {"dice": dice_mean}
 
+class EntropyLoss(BaseLoss):
+    def __init__(self, dim: int = 1, eps: float = 1e-8, reduction: str = "mean"):
+        """
+        Entropy regularization loss.
+
+        Args:
+            dim: class/channel dimension (usually 1 for (B, C, H, W))
+            eps: numerical stability
+            reduction: "mean" | "sum" | "none"
+        """
+        super().__init__()
+        self.dim = dim
+        self.eps = eps
+        self.reduction = reduction
+
+    def forward(self, pred: torch.Tensor):
+        """
+        pred: (B, C, H, W) or (B, C)
+        Interpreted as logits.
+        """
+        p = torch.softmax(pred, dim=self.dim)
+        entropy = -(p * torch.log(p + self.eps)).sum(dim=self.dim)
+
+        if self.reduction == "mean":
+            loss = entropy.mean()
+        elif self.reduction == "sum":
+            loss = entropy.sum()
+        elif self.reduction == "none":
+            loss = entropy
+        else:
+            raise ValueError(f"Invalid reduction: {self.reduction}")
+
+        # Always log a scalar
+        metric = entropy.mean()
+
+        return loss, {"entropy": metric}
+
 
 class CrossEntropyLoss(BaseLoss):
     def __init__(self, weight: torch.Tensor | None = None, reduction: str = "mean", apply_class_balancing: bool = True):
