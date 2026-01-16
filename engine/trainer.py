@@ -399,7 +399,7 @@ class Trainer:
             total_loss = (
                 self.opt.seg_weight * loss_seg
                 + self.opt.interp_weight * loss_interp
-                + self.opt.g_weight * self.opt.synth_weight
+                + self.opt.synth_weight * loss_G
             )
 
             total_loss.backward()
