@@ -4,6 +4,7 @@ from torch.utils.data import DistributedSampler
 
 from models import Interpolator, Segmentator, Synthesizer, Discriminator
 from utils import visualization
+from utils.psnr import psnr
 from .bundles import Batch
 from .training_steps import run_segmentator, run_interpolator, run_synthesizer, run_synthesizer_gan
 from collections import deque
@@ -105,20 +106,53 @@ class Trainer:
 
     def relative_improvement(self, values, eps: float = 1e-8) -> float:
         """
-        Computes the relative improvement between the first and last values in a list.
-        Used to determine when to switch training stages.
-        values: list of float
-        returns: (old - new) / max(|old|, eps)
+        Computes a *stability-aware* relative improvement over a sequence.
+
+        The metric considers **all values**, not just first/last:
+
+        1. Compute relative improvement from the mean of the first half
+           to the mean of the second half
+        2. Penalize non-stable sequences using normalized variance
+
+        Returns:
+            RI = improvement * stability
+
+        Where:
+            improvement = (mean_old - mean_new) / max(|mean_old|, eps)
+            stability   = 1 / (1 + coeff_variation)
         """
-        if len(values) < 2:
+        n = len(values)
+        if n < 2:
             return 0.0
-        old = values[0]
-        new = values[-1]
-        return (old - new) / max(abs(old), eps)
+
+        # Split sequence
+        mid = n // 2
+        first = values[:mid]
+        second = values[mid:]
+
+        mean_old = sum(first) / len(first)
+        mean_new = sum(second) / len(second)
+
+        improvement = (mean_old - mean_new) / max(abs(mean_old), eps)
+
+        # Stability: coefficient of variation over full window
+        mean_all = sum(values) / n
+        var = sum((v - mean_all) ** 2 for v in values) / n
+        std = var ** 0.5
+        coeff_variation = std / max(abs(mean_all), eps)
+
+        stability = 1.0 / (1.0 + coeff_variation)
+
+        return improvement * stability
 
     def replace_labels_with_segmentation(self, batch: Batch, seg_output):
         if seg_output is not None:
             batch.labels = [seg.detach().argmax(dim=1) for seg in seg_output]
+
+    def replace_middle_with_interpolation(self, batch: Batch, interp_output):
+        if interp_output is not None:
+            batch.labels[1] = interp_output.detach().argmax(dim=1)
+
 
     def forward_seg(self, batch, optimizer=None, require_grad=True):
         if not self.seg:
@@ -301,6 +335,11 @@ class Trainer:
 
             self.replace_labels_with_segmentation(batch, seg_out)
 
+            with torch.no_grad():
+                interp_out, _ = self.forward_interp(batch, optimizer=None)
+
+            self.replace_middle_with_interpolation(batch, interp_out)
+
             # GAN update
             fake_synth_out, loss_G, loss_D = self.forward_synth_gan(
                 batch,
@@ -337,6 +376,7 @@ class Trainer:
             seg_out, loss_seg = self.forward_seg(batch, optimizer=None)
             self.replace_labels_with_segmentation(batch, seg_out)
             interp_out, loss_interp = self.forward_interp(batch, optimizer=None)
+            self.replace_middle_with_interpolation(batch, interp_out)
 
             fake_synth_out, loss_G, loss_D = self.forward_synth_gan(
                 batch, optimizer_synth=None, optimizer_disc=None
@@ -345,8 +385,7 @@ class Trainer:
             total_loss = (
                 self.opt.seg_weight * loss_seg
                 + self.opt.interp_weight * loss_interp
-                + self.opt.g_weight * loss_G
-                + self.opt.d_weight * loss_D
+                + self.opt.g_weight * self.opt.synth_weight
             )
 
             total_loss.backward()
@@ -409,28 +448,65 @@ class Trainer:
             )
 
     def validate(self):
-        total_loss_seg = total_loss_interp = total_loss_G = total_loss_D = total_dice_seg = total_dice_interp = 0.0
         n_batches = len(self.dataloaders.val)
+
+        totals = {
+            "loss": {
+                "seg": 0.0,
+                "interp": 0.0,
+                "synth_G": 0.0,
+                "synth_D": 0.0,
+            },
+            "dice": {
+                "seg": 0.0,
+                "interp": 0.0,
+            },
+            "psnr": {
+                "synth": 0.0,
+            },
+        }
+
         with torch.no_grad():
             for data in self.dataloaders.val:
                 batch = self.make_batch(data)
+
                 seg_out, loss_seg = self.forward_seg(batch)
                 interp_out, loss_interp = self.forward_interp(batch)
                 fake_synth_out, loss_G, loss_D = self.forward_synth_gan(batch)
-                outputs = {"seg": seg_out, "interp": interp_out, "synth": fake_synth_out}
-                total_loss_seg += loss_seg
-                total_loss_interp += loss_interp
-                total_loss_G += loss_G
-                total_loss_D += loss_D
+
+                outputs = {
+                    "seg": seg_out,
+                    "interp": interp_out,
+                    "synth": fake_synth_out,
+                }
+
+                # ---- accumulate losses ----
+                totals["loss"]["seg"] += loss_seg
+                totals["loss"]["interp"] += loss_interp
+                totals["loss"]["synth_G"] += loss_G
+                totals["loss"]["synth_D"] += loss_D
+
+                # ---- accumulate metrics ----
                 if seg_out is not None:
                     for i in range(len(seg_out)):
                         pred = seg_out[i].detach()
                         target = batch.labels[i].squeeze(1).long()
-                        total_dice_seg += dice_score_multiclass(pred, target)
+                        totals["dice"]["seg"] += dice_score_multiclass(pred, target)
+
                 if interp_out is not None:
-                    total_dice_interp += dice_score_multiclass(
-                        interp_out, batch.labels[1].squeeze(1).long()
+                    totals["dice"]["interp"] += dice_score_multiclass(
+                        interp_out,
+                        batch.labels[1].squeeze(1).long(),
                     )
+                if fake_synth_out is not None:
+                    psnr_value = psnr(
+                        fake_synth_out,
+                        batch.images[1].to(self.device),
+                        max_val=1.0,
+                    )
+                    totals["psnr"]["synth"] += psnr_value
+
+                # ---- visualization ----
                 if self.context.writer:
                     visualization.samples_comparison(
                         self.context,
@@ -440,16 +516,44 @@ class Trainer:
                         self.global_step,
                         tag="val_samples",
                     )
-        avg_loss_seg = total_loss_seg / n_batches
-        avg_loss_interp = total_loss_interp / n_batches
-        avg_loss_synth_G = total_loss_G / n_batches
-        avg_loss_synth_D = total_loss_D / n_batches
-        avg_dice_seg = total_dice_seg / (n_batches * 3) if self.seg else 0.0
-        avg_dice_interp = total_dice_interp / n_batches if self.interp else 0.0
+
+        # ---- averages ----
+        metrics = {
+            "loss": {
+                "seg": totals["loss"]["seg"] / n_batches,
+                "interp": totals["loss"]["interp"] / n_batches,
+                "synth_G": totals["loss"]["synth_G"] / n_batches,
+                "synth_D": totals["loss"]["synth_D"] / n_batches,
+            },
+            "dice": {
+                "seg": (
+                    totals["dice"]["seg"] / (n_batches * 3)
+                    if self.seg else 0.0
+                ),
+                "interp": (
+                    totals["dice"]["interp"] / n_batches
+                    if self.interp else 0.0
+                ),
+            },
+            "psnr": {
+                "synth": (
+                    totals["psnr"]["synth"] / n_batches
+                    if self.synth else 0.0
+                ),
+            },
+        }
+
+        # ---- logging ----
         self._log_validation(
-            avg_loss_seg, avg_loss_interp, avg_loss_synth_G, avg_loss_synth_D, avg_dice_seg, avg_dice_interp
+            metrics["loss"]["seg"],
+            metrics["loss"]["interp"],
+            metrics["loss"]["synth_G"],
+            metrics["loss"]["synth_D"],
+            metrics["dice"]["seg"],
+            metrics["dice"]["interp"],
         )
-        return avg_loss_seg, avg_loss_interp, avg_loss_synth_G, avg_loss_synth_D, avg_dice_seg
+
+        return metrics
 
     def train(self):
         seg_val_history = deque(maxlen=5)
@@ -474,12 +578,12 @@ class Trainer:
                 self.stage4_joint_finetune()
 
             # -------- VALIDATE --------
-            val_loss_seg, val_loss_interp, val_loss_synth_G, val_loss_synth_D, dice = self.validate()
+            val_metrics = self.validate()
 
             # -------- STAGE TRANSITIONS --------
 
             if self.train_stage == 0:
-                seg_val_history.append(val_loss_seg)
+                seg_val_history.append(val_metrics["dice"]["seg"])
                 if len(seg_val_history) == seg_val_history.maxlen:
                     ri = self.relative_improvement(seg_val_history)
                     if ri < 0.01:
@@ -488,7 +592,7 @@ class Trainer:
                         continue
 
             if self.train_stage == 1:
-                interp_val_history.append(val_loss_interp)
+                interp_val_history.append(val_metrics["dice"]["interp"])
                 if len(interp_val_history) == interp_val_history.maxlen:
                     ri = self.relative_improvement(interp_val_history)
                     if ri < 0.01:
@@ -497,7 +601,7 @@ class Trainer:
                         continue
 
             if self.train_stage == 2:
-                synth_val_history.append(val_loss_synth_G)
+                synth_val_history.append(val_metrics["psnr"]["synth"])
                 if len(synth_val_history) == synth_val_history.maxlen:
                     ri = self.relative_improvement(synth_val_history)
                     if ri < 0.01:

@@ -74,6 +74,12 @@ def get_parser(train: bool = True) -> argparse.ArgumentParser:
     parser.add_argument("--no_balancing_inloss", action="store_true", default=False)
     parser.add_argument("--no_labelmix", action="store_true", default=False)
 
+    parser.add_argument("--seg_weight", type=float, default=1.0)
+    parser.add_argument("--interp_weight", type=float, default=1.0)
+    parser.add_argument("--synth_weight", type=float, default=1.0)
+
+
+
     # -------------------- Training Control --------------------
     if train:
         parser.add_argument("--continue_train", action="store_true")
