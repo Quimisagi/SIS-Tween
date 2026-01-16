@@ -20,7 +20,7 @@ def get_parser(train: bool = True) -> argparse.ArgumentParser:
     parser.add_argument("--gpu_ids", type=str, default="0")
     parser.add_argument("--checkpoints_dir", type=str, default="./checkpoints")
     parser.add_argument("--num_workers", type=int, default=4)
-    parser.add_argument("--distributed_enabled", default=False)
+    parser.add_argument("--distributed_enabled", default=True)
     parser.add_argument("--aspect_ratio", type=float, default=1.0)
     parser.add_argument("--semantic_nc", type=int, default=6)
 

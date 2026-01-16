@@ -10,6 +10,8 @@ from logs.logger import init_logger
 from config import read_arguments
 from models import VGG19
 
+import torch
+
 
 def train_fn(opt):
 
@@ -24,7 +26,6 @@ def train_fn(opt):
     logger.debug(f"Rank {local_rank}/{world_size} using device {device}")
 
     logger.info("Setting up training...")
-    logger.debug(f"Configuration: {opt}")
 
     # ---- Transforms ----
     image_transform, label_transform = setup.create_transforms(opt.image_size)
