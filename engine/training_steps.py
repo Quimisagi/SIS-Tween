@@ -102,23 +102,29 @@ def run_segmentator(
     grad_ctx = torch.enable_grad() if training else torch.no_grad()
 
     outputs = []
-    total_loss = 0.0
+    total_loss = torch.zeros((), device=device)
 
     with grad_ctx:
+        # Zero once per batch
+        if training and optimizer is not None:
+            optimizer.zero_grad(set_to_none=True)
+
         for img, lbl in zip(batch.images, batch.labels):
-            if training and optimizer is not None:
-                optimizer.zero_grad(set_to_none=True)
-
-            out, loss = segmentator_step(model, loss_fn, img, lbl, device, num_classes)
-
-            if training and optimizer is not None:
-                loss.backward()
-                optimizer.step()
+            out, loss = segmentator_step(
+                model, loss_fn, img, lbl, device, num_classes
+            )
 
             outputs.append(out.detach())
-            total_loss += loss.item()
+            total_loss = total_loss + loss
 
-    return outputs, total_loss / len(batch.images)
+        mean_loss = total_loss / len(batch.images)
+
+        # Single backward + step for the whole batch
+        if training and optimizer is not None:
+            mean_loss.backward()
+            optimizer.step()
+
+    return outputs, mean_loss
 
 
 # -----------------------------
@@ -332,11 +338,10 @@ def run_synthesizer_gan(
 
     grad_ctx = torch.enable_grad() if training else torch.no_grad()
 
-    loss_G_total = 0.0
-    loss_D_total = 0.0
-
     with grad_ctx:
-        # Update Discriminator
+        # ------------------
+        # Discriminator step
+        # ------------------
         if training and optimizer_D is not None:
             optimizer_D.zero_grad(set_to_none=True)
 
@@ -348,9 +353,9 @@ def run_synthesizer_gan(
             loss_D.backward()
             optimizer_D.step()
 
-        loss_D_total += loss_D.item()
-
-        # Update Generator
+        # ------------------
+        # Generator step
+        # ------------------
         if training and optimizer_G is not None:
             optimizer_G.zero_grad(set_to_none=True)
 
@@ -362,8 +367,4 @@ def run_synthesizer_gan(
             loss_G.backward()
             optimizer_G.step()
 
-        loss_G_total += loss_G.item()
-
-    return fake, loss_G_total, loss_D_total
-
-
+    return fake, loss_G, loss_D

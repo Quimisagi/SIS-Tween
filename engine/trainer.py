@@ -169,19 +169,15 @@ class Trainer:
             self.seg, self.loss_fn, batch, self.device, optimizer, training=require_grad
         )
 
-    def forward_interp(self, batch, optimizer=None):
+    def forward_interp(self, batch, optimizer=None, require_grad=True):
         if not self.interp:
             return None, 0.0
         return run_interpolator(
-            self.interp, self.loss_fn, batch, self.device, optimizer
+            self.interp, self.loss_fn, batch, self.device, optimizer, training=require_grad
         )
 
-    def forward_synth(self, batch, optimizer=None):
-        if not self.synth:
-            return None, 0.0
-        return run_synthesizer(self.synth, self.loss_fn, batch, self.device, optimizer)
 
-    def forward_synth_gan(self, batch, optimizer_synth=None, optimizer_disc=None, training=True):
+    def forward_synth_gan(self, batch, optimizer_synth=None, optimizer_disc=None, require_grad=True):
         if not self.synth or not self.disc:
             return None, 0.0, 0.0
         return run_synthesizer_gan(
@@ -192,7 +188,7 @@ class Trainer:
             self.device,
             optimizer_synth,
             optimizer_disc,
-            training=training,  
+            training=require_grad,  
         )
 
 
@@ -485,9 +481,9 @@ class Trainer:
             for data in self.dataloaders.val:
                 batch = self.make_batch(data)
 
-                seg_out, loss_seg = self.forward_seg(batch)
-                interp_out, loss_interp = self.forward_interp(batch)
-                fake_synth_out, loss_G, loss_D = self.forward_synth_gan(batch, training=False)
+                seg_out, loss_seg = self.forward_seg(batch, require_grad=False)
+                interp_out, loss_interp = self.forward_interp(batch, require_grad=False)
+                fake_synth_out, loss_G, loss_D = self.forward_synth_gan(batch, require_grad=False)
 
                 outputs = {
                     "seg": seg_out,
