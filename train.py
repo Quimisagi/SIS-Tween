@@ -86,7 +86,8 @@ def train_fn(opt):
         tasks["interp"] = losses.CompositeLoss(
             {
                 "dice": (losses.MulticlassDiceLoss().to(device), 1.0),
-                "ce": (losses.CrossEntropyLoss().to(device), 0.5),
+                "ce": (losses.CrossEntropyLoss().to(device), 1.0),
+                "sobel": (losses.SobelEdgeLoss().to(device), 0.5),
                 "entropy": (losses.EntropyLoss().to(device), 0.05),
             }
         ).to(device)

@@ -385,22 +385,22 @@ class Trainer:
             for opt in ["seg", "interp", "synth", "disc"]:
                 self.optimizers[opt].zero_grad(set_to_none=True)
 
-            seg_out, loss_seg = self.forward_seg(batch, optimizer=None)
+            seg_out, loss_seg = self.forward_seg(batch, optimizer=None, require_grad=False)
             self.replace_labels_with_segmentation(batch, seg_out)
-            interp_out, loss_interp = self.forward_interp(batch, optimizer=None)
+            interp_out, loss_interp = self.forward_interp(batch, optimizer=None, require_grad=False)
             self.replace_middle_with_interpolation(batch, interp_out)
 
             fake_synth_out, loss_G, loss_D = self.forward_synth_gan(
-                batch, optimizer_synth=None, optimizer_disc=None
+                batch, optimizer_synth=None, optimizer_disc=None, require_grad=False
             )
 
-            total_loss = (
-                self.opt.seg_weight * loss_seg
-                + self.opt.interp_weight * loss_interp
-                + self.opt.synth_weight * loss_G
-            )
-
-            total_loss.backward()
+            with torch.enable_grad():
+                total_loss = (
+                    self.opt.seg_weight * loss_seg
+                    + self.opt.interp_weight * loss_interp
+                    + self.opt.synth_weight * loss_G
+                )
+                total_loss.backward()
 
             for opt in ["seg", "interp", "synth", "disc"]:
                 self.optimizers[opt].step()

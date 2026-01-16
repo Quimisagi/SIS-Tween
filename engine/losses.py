@@ -123,6 +123,62 @@ class CrossEntropyLoss(BaseLoss):
         return loss, {"cross_entropy": loss}
 
 
+class SobelEdgeLoss(BaseLoss):
+    def __init__(self, eps: float = 1e-6, reduction: str = "mean"):
+        """
+        Sobel-based edge loss for multi-class segmentation masks.
+        
+        Args:
+            eps: small value to avoid sqrt(0)
+            reduction: "mean" | "sum" | "none"
+        """
+        super().__init__()
+        self.eps = eps
+        self.reduction = reduction
+
+        # Define Sobel kernels
+        sobel_x = torch.tensor([[1, 0, -1],
+                                [2, 0, -2],
+                                [1, 0, -1]], dtype=torch.float32).reshape(1, 1, 3, 3)
+        sobel_y = torch.tensor([[1, 2, 1],
+                                [0, 0, 0],
+                                [-1, -2, -1]], dtype=torch.float32).reshape(1, 1, 3, 3)
+
+        self.register_buffer("sobel_x", sobel_x)
+        self.register_buffer("sobel_y", sobel_y)
+
+    def forward(self, pred: torch.Tensor, target: torch.Tensor):
+        """
+        pred:   (B, C, H, W) logits or softmax
+        target: (B, C, H, W) one-hot
+        """
+        # Convert logits to probabilities
+        probs = F.softmax(pred, dim=1)
+
+        # Convolve with Sobel kernels using groups=C to do all channels at once
+        grad_pred_x = F.conv2d(probs, self.sobel_x.repeat(probs.shape[1], 1, 1, 1), 
+                               padding=1, groups=probs.shape[1])
+        grad_pred_y = F.conv2d(probs, self.sobel_y.repeat(probs.shape[1], 1, 1, 1), 
+                               padding=1, groups=probs.shape[1])
+        grad_target_x = F.conv2d(target, self.sobel_x.repeat(target.shape[1], 1, 1, 1), 
+                                 padding=1, groups=target.shape[1])
+        grad_target_y = F.conv2d(target, self.sobel_y.repeat(target.shape[1], 1, 1, 1), 
+                                 padding=1, groups=target.shape[1])
+
+        # Gradient magnitude
+        grad_pred = torch.sqrt(grad_pred_x**2 + grad_pred_y**2 + self.eps)
+        grad_target = torch.sqrt(grad_target_x**2 + grad_target_y**2 + self.eps)
+
+        # L1 loss on edges
+        loss = F.l1_loss(grad_pred, grad_target, reduction=self.reduction)
+
+        # Always return a metric for logging
+        metric = loss if self.reduction != "none" else loss.mean()
+
+        return loss, {"sobel_edge": metric}
+
+
+
 class FocalLoss(BaseLoss):
     def __init__(
         self,
