@@ -10,6 +10,8 @@ from .training_steps import run_segmentator, run_interpolator, run_synthesizer_g
 from collections import deque
 from utils.dice_score import dice_score_multiclass
 
+import os
+
 
 class Trainer:
     def __init__(self, loss_fn, dataloaders, opt, context):
@@ -97,6 +99,40 @@ class Trainer:
         self.epoch = 0
         self.global_step = 0
         self.train_stage = 0
+
+    def save_checkpoint(self, path: str):
+        """Save the full training state to a checkpoint file."""
+        state = {
+            "epoch": self.epoch,
+            "global_step": self.global_step,
+            "train_stage": self.train_stage,
+            "model": {},
+            "optimizer": {},
+            "scheduler": {},
+            "opt": self.opt,  # Save config
+        }
+
+        # Save model states
+        if self.seg:
+            state["model"]["seg"] = self.seg.module.state_dict() if hasattr(self.seg, "module") else self.seg.state_dict()
+        if self.interp:
+            state["model"]["interp"] = self.interp.module.state_dict() if hasattr(self.interp, "module") else self.interp.state_dict()
+        if self.synth:
+            state["model"]["synth"] = self.synth.module.state_dict() if hasattr(self.synth, "module") else self.synth.state_dict()
+        if self.disc:
+            state["model"]["disc"] = self.disc.module.state_dict() if hasattr(self.disc, "module") else self.disc.state_dict()
+
+        # Save optimizers
+        for k, opt in self.optimizers.items():
+            state["optimizer"][k] = opt.state_dict()
+
+        # Save schedulers
+        for k, sched in self.schedulers.items():
+            state["scheduler"][k] = sched.state_dict()
+
+        torch.save(state, path)
+        if self.context.logger:
+            self.context.logger.info(f"Checkpoint saved to {path}")
 
     def make_batch(self, data):
         """
@@ -303,7 +339,7 @@ class Trainer:
             batch = self.make_batch(data)
 
             with torch.no_grad():
-                seg_out, _ = self.forward_seg(batch, require_grad=False)
+                seg_out, loss_seg = self.forward_seg(batch, require_grad=False)
 
             self.replace_labels_with_segmentation(batch, seg_out)
 
@@ -320,6 +356,7 @@ class Trainer:
             self.log_step(
                 stage="Stage2",
                 losses={
+                    "Segmentation": loss_seg,
                     "Interpolation": loss_interp,
                     "Synthesis_G": loss_G,
                     "Synthesis_D": loss_D,
@@ -343,12 +380,12 @@ class Trainer:
 
             # Teacher segmentation (no grads)
             with torch.no_grad():
-                seg_out, _ = self.forward_seg(batch, require_grad=False)
+                seg_out, loss_seg = self.forward_seg(batch, require_grad=False)
 
             self.replace_labels_with_segmentation(batch, seg_out)
 
             with torch.no_grad():
-                interp_out, _ = self.forward_interp(batch, optimizer=None)
+                interp_out, loss_interp = self.forward_interp(batch, optimizer=None)
 
             self.replace_middle_with_interpolation(batch, interp_out)
 
@@ -362,11 +399,14 @@ class Trainer:
             self.log_step(
                 stage="Stage3",
                 losses={
+                    "Segmentation": loss_seg,
+                    "Interpolation": loss_interp,
                     "Synthesis_G": loss_G,
                     "Synthesis_D": loss_D,
                 },
                 outputs={
                     "seg": seg_out,
+                    "interp": interp_out,
                     "synth": fake_synth_out,
                 },
                 batch=batch,
@@ -382,33 +422,34 @@ class Trainer:
         for data in self.dataloaders.train:
             batch = self.make_batch(data)
 
+            # Zero grads
             for opt in ["seg", "interp", "synth", "disc"]:
                 self.optimizers[opt].zero_grad(set_to_none=True)
 
-            seg_out, loss_seg = self.forward_seg(batch, optimizer=None, require_grad=False)
+            # ---------------- Segmentation ----------------
+            seg_out, loss_seg = self.forward_seg(batch, optimizer=None)
             self.replace_labels_with_segmentation(batch, seg_out)
-            interp_out, loss_interp = self.forward_interp(batch, optimizer=None, require_grad=False)
+            (self.opt.seg_weight * loss_seg).backward(retain_graph=True)
+
+            # ---------------- Interpolation ----------------
+            interp_out, loss_interp = self.forward_interp(batch, optimizer=None)
             self.replace_middle_with_interpolation(batch, interp_out)
+            (self.opt.interp_weight * loss_interp).backward(retain_graph=True)
 
+            # ---------------- GAN Synthesis ----------------
             fake_synth_out, loss_G, loss_D = self.forward_synth_gan(
-                batch, optimizer_synth=None, optimizer_disc=None, require_grad=False
+                batch, optimizer_synth=None, optimizer_disc=None
             )
+            (self.opt.synth_weight * loss_G).backward()
 
-            with torch.enable_grad():
-                total_loss = (
-                    self.opt.seg_weight * loss_seg
-                    + self.opt.interp_weight * loss_interp
-                    + self.opt.synth_weight * loss_G
-                )
-                total_loss.backward()
-
+            # ---------------- Optimizer step ----------------
             for opt in ["seg", "interp", "synth", "disc"]:
                 self.optimizers[opt].step()
 
+            # Logging
             self.log_step(
                 stage="Stage4",
                 losses={
-                    "Total": total_loss,
                     "Segmentation": loss_seg,
                     "Interpolation": loss_interp,
                     "Synthesis_G": loss_G,
@@ -417,10 +458,11 @@ class Trainer:
                 outputs={"seg": seg_out, "interp": interp_out, "synth": fake_synth_out},
                 batch=batch,
             )
+
             self.global_step += 1
 
     def _log_validation(
-        self, avg_loss_seg, avg_loss_interp, avg_loss_G, avg_loss_D, avg_dice_seg, avg_dice_interp
+        self, avg_loss_seg, avg_loss_interp, avg_loss_G, avg_loss_D, avg_dice_seg, avg_dice_interp, avg_psnr_synth
     ):
         if self.context.logger:
             self.context.logger.info(
@@ -458,6 +500,12 @@ class Trainer:
                 self.global_step,
                 "loss/interpolation",
             )
+            visualization.plot(
+                self.context,
+                {"synth_psnr": avg_psnr_synth},
+                self.global_step,
+                tag="psnr",
+                )
 
     def validate(self):
         n_batches = len(self.dataloaders.val)
@@ -563,6 +611,7 @@ class Trainer:
             metrics["loss"]["synth_D"],
             metrics["dice"]["seg"],
             metrics["dice"]["interp"],
+            metrics["psnr"]["synth"],
         )
 
         return metrics
@@ -599,7 +648,7 @@ class Trainer:
                 seg_val_history.append(val_metrics["dice"]["seg"])
                 if len(seg_val_history) == seg_val_history.maxlen:
                     ri = self.relative_improvement(seg_val_history)
-                    if ri < 0.01:
+                    if ri < 0.001:
                         self.context.logger.info(f"Segmentation converged with RI={ri:.4f}. Moving to Stage 2.")
                         self.train_stage = 1
                         interp_val_history.clear()
@@ -609,7 +658,7 @@ class Trainer:
                 interp_val_history.append(val_metrics["dice"]["interp"])
                 if len(interp_val_history) == interp_val_history.maxlen:
                     ri = self.relative_improvement(interp_val_history)
-                    if ri < 0.01:
+                    if ri < 0.001:
                         self.context.logger.info(f"Interpolation converged with RI={ri:.4f}. Moving to Stage 3.")
                         self.train_stage = 2
                         synth_val_history.clear()
@@ -619,7 +668,7 @@ class Trainer:
                 synth_val_history.append(val_metrics["psnr"]["synth"])
                 if len(synth_val_history) == synth_val_history.maxlen:
                     ri = self.relative_improvement(synth_val_history)
-                    if ri < 0.01:
+                    if ri < 0.001:
                         self.context.logger.info(f"Synthesis converged with RI={ri:.4f}. Moving to Stage 4.")
                         self.train_stage = 3
                         continue
@@ -627,8 +676,14 @@ class Trainer:
                 final_val_history.append(val_metrics["psnr"]["synth"])
                 if len(final_val_history) == final_val_history.maxlen:
                     ri = self.relative_improvement(final_val_history)
-                    if ri < 0.01:
+                    if ri < 0.001:
                         self.context.logger.info(
                                 f"Training converged. Stopping training with RI={ri:.4f}."
                         )
                         break
+
+            # -------- SAVE CHECKPOINT --------
+            if (self.epoch + 1) % 5 == 0:
+                os.makedirs(self.opt.checkpoints_dir, exist_ok=True)
+                checkpoint_path = f"{self.opt.checkpoints_dir}/checkpoint_epoch_{self.epoch+1}.pth"
+                self.save_checkpoint(checkpoint_path)
