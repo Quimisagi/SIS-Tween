@@ -9,6 +9,10 @@ from .bundles import Batch
 from .training_steps import run_segmentator, run_interpolator, run_synthesizer_gan, joint_seg_interp_synth_step
 from collections import deque
 from utils.dice_score import dice_score_multiclass
+from utils.relative_improvement import relative_improvement
+from utils.log_helper import log_step, log_validation
+from spade.networks.sync_batchnorm import DataParallelWithCallback
+from spade.pix2pix_model import Pix2PixModel
 
 import os
 
@@ -32,12 +36,7 @@ class Trainer:
             else None
         )
         self.synth = (
-            Synthesizer(opt, context).to(self.device)
-            if "synth" in opt.active_models
-            else None
-        )
-        self.disc = (
-            Discriminator(opt).to(self.device)
+            Pix2PixModel(opt).to(self.device)
             if "synth" in opt.active_models
             else None
         )
@@ -55,10 +54,6 @@ class Trainer:
                 self.synth = DistributedDataParallel(
                     self.synth, device_ids=[context.local_rank]
                 )
-            if self.disc:
-                self.disc = DistributedDataParallel(
-                    self.disc, device_ids=[context.local_rank]
-                )
 
         self.optimizers = {}
         if self.seg:
@@ -69,14 +64,6 @@ class Trainer:
             self.optimizers["interp"] = torch.optim.Adam(
                 self.interp.parameters(), lr=opt.lr_interp
             )
-        if self.synth:
-            self.optimizers["synth"] = torch.optim.Adam(
-                self.synth.parameters(), lr=opt.lr_synth
-            )
-        if self.disc:
-            self.optimizers["disc"] = torch.optim.Adam(
-                self.disc.parameters(), lr=opt.lr_d
-            )
 
         self.schedulers = {}
         if self.seg:
@@ -86,14 +73,6 @@ class Trainer:
         if self.interp:
             self.schedulers["interp"] = torch.optim.lr_scheduler.StepLR(
                 self.optimizers["interp"], 10, 0.1
-            )
-        if self.synth:
-            self.schedulers["synth"] = torch.optim.lr_scheduler.StepLR(
-                self.optimizers["synth"], 10, 0.1
-            )
-        if self.disc:
-            self.schedulers["disc"] = torch.optim.lr_scheduler.StepLR(
-                self.optimizers["disc"], 10, 0.1
             )
 
         self.epoch = 0
@@ -119,8 +98,6 @@ class Trainer:
             state["model"]["interp"] = self.interp.module.state_dict() if hasattr(self.interp, "module") else self.interp.state_dict()
         if self.synth:
             state["model"]["synth"] = self.synth.module.state_dict() if hasattr(self.synth, "module") else self.synth.state_dict()
-        if self.disc:
-            state["model"]["disc"] = self.disc.module.state_dict() if hasattr(self.disc, "module") else self.disc.state_dict()
 
         # Save optimizers
         for k, opt in self.optimizers.items():
@@ -140,47 +117,6 @@ class Trainer:
         """
         return Batch(images=data["images"], labels=data["labels"], edges=data["edges"], class_index=data["class_index"])
 
-    def relative_improvement(self, values, eps: float = 1e-8) -> float:
-        """
-        Computes a *stability-aware* relative improvement over a sequence.
-
-        The metric considers **all values**, not just first/last:
-
-        1. Compute relative improvement from the mean of the first half
-           to the mean of the second half
-        2. Penalize non-stable sequences using normalized variance
-
-        Returns:
-            RI = improvement * stability
-
-        Where:
-            improvement = (mean_old - mean_new) / max(|mean_old|, eps)
-            stability   = 1 / (1 + coeff_variation)
-        """
-        n = len(values)
-        values = list(values)
-        if n < 2:
-            return 0.0
-
-        # Split sequence
-        mid = n // 2
-        first = values[:mid]
-        second = values[mid:]
-
-        mean_old = sum(first) / len(first)
-        mean_new = sum(second) / len(second)
-
-        improvement = (mean_old - mean_new) / max(abs(mean_old), eps)
-
-        # Stability: coefficient of variation over full window
-        mean_all = sum(values) / n
-        var = sum((v - mean_all) ** 2 for v in values) / n
-        std = var ** 0.5
-        coeff_variation = std / max(abs(mean_all), eps)
-
-        stability = 1.0 / (1.0 + coeff_variation)
-
-        return abs(improvement * stability)
 
     def replace_labels_with_segmentation(self, batch: Batch, seg_output):
         if seg_output is not None:
@@ -213,71 +149,6 @@ class Trainer:
         )
 
 
-    def forward_synth_gan(self, batch, optimizer_synth=None, optimizer_disc=None, require_grad=True):
-        if not self.synth or not self.disc:
-            return None, 0.0, 0.0
-        return run_synthesizer_gan(
-            self.synth,
-            self.disc,
-            self.loss_fn,
-            batch,
-            self.device,
-            optimizer_synth,
-            optimizer_disc,
-            training=require_grad,  
-        )
-
-
-    def log_step(self, stage, losses, batch=None, outputs=None):
-        if not self.context.writer or self.global_step % 300 != 0:
-            return
-        loss_str = " ".join(f"{k}={v:.4f}" for k, v in losses.items())
-        self.context.logger.info(
-            f"[{stage}][Epoch:{self.epoch+1}/{self.opt.epochs}][Step:{self.global_step}] {loss_str}"
-        )
-        if "Segmentation" in losses:
-            visualization.plot(
-                self.context,
-                {"train": losses["Segmentation"]},
-                self.global_step,
-                "loss/segmentation",
-            )
-        if "Interpolation" in losses:
-            visualization.plot(
-                self.context,
-                {"train": losses["Interpolation"]},
-                self.global_step,
-                "loss/interpolation",
-            )
-        if "Synthesis_G" in losses:
-            visualization.plot(
-                self.context,
-                {"train": losses["Synthesis_G"]},
-                self.global_step,
-                "loss/synthesis_G",
-            )
-        if "Synthesis_D" in losses:
-            visualization.plot(
-                self.context,
-                {"train": losses["Synthesis_D"]},
-                self.global_step,
-                "loss/synthesis_D",
-            )
-
-        outputs = {
-                k: self.safe_detach(v) for k, v in (outputs or {}).items()
-        }
-
-        if batch is not None and outputs is not None:
-            visualization.samples_comparison(
-                self.context,
-                batch.images,
-                batch.labels,
-                outputs,
-                self.global_step,
-                tag="samples",
-            )
-
     def freeze(self, net):
         if not net:
             return
@@ -296,7 +167,6 @@ class Trainer:
         self.unfreeze(self.seg)
         self.unfreeze(self.interp)
         self.unfreeze(self.synth)
-        self.unfreeze(self.disc)
 
         for data in self.dataloaders.train:
             batch = self.make_batch(data)
@@ -313,7 +183,7 @@ class Trainer:
                 optimizer_disc=self.optimizers["disc"],
             )
 
-            self.log_step(
+            log_step(
                 stage="Stage1",
                 losses={
                     "Segmentation": loss_seg,
@@ -333,7 +203,6 @@ class Trainer:
         self.freeze(self.seg)
         self.unfreeze(self.interp)
         self.unfreeze(self.synth)
-        self.unfreeze(self.disc)
 
         for data in self.dataloaders.train:
             batch = self.make_batch(data)
@@ -353,7 +222,7 @@ class Trainer:
                 optimizer_disc=self.optimizers["disc"],
             )
 
-            self.log_step(
+            log_step(
                 stage="Stage2",
                 losses={
                     "Segmentation": loss_seg,
@@ -367,13 +236,10 @@ class Trainer:
             self.global_step += 1
 
     def stage3_frozen_seg_and_interp(self):
-        # Freeze teachers
         self.freeze(self.seg)
         self.freeze(self.interp)
 
-        # Train GAN
         self.unfreeze(self.synth)
-        self.unfreeze(self.disc)
 
         for data in self.dataloaders.train:
             batch = self.make_batch(data)
@@ -396,7 +262,7 @@ class Trainer:
                 optimizer_disc=self.optimizers["disc"],
             )
 
-            self.log_step(
+            log_step(
                 stage="Stage3",
                 losses={
                     "Segmentation": loss_seg,
@@ -417,7 +283,6 @@ class Trainer:
         self.unfreeze(self.seg)
         self.unfreeze(self.interp)
         self.unfreeze(self.synth)
-        self.unfreeze(self.disc)
 
         for data in self.dataloaders.train:
             batch = self.make_batch(data)
@@ -451,51 +316,6 @@ class Trainer:
 
             self.global_step += 1
 
-    def _log_validation(
-        self, avg_loss_seg, avg_loss_interp, avg_loss_G, avg_loss_D, avg_dice_seg, avg_dice_interp, avg_psnr_synth
-    ):
-        if self.context.logger:
-            self.context.logger.info(
-                    f"[Validation] Seg_Loss={avg_loss_seg:.4f}, Interp_Loss={avg_loss_interp:.4f}, Synth_G_Loss={avg_loss_G:.4f}, Synth_D_Loss={avg_loss_D:.4f}, Dice_Seg={avg_dice_seg:.4f}, Dice_Interp={avg_dice_interp:.4f}"
-            )
-        if self.context.writer:
-            visualization.plot(
-                self.context,
-                {"segmentation": avg_dice_seg, "interpolation": avg_dice_interp},
-                self.global_step,
-                tag="dice",
-            )
-            visualization.plot(
-                self.context,
-                {"validation": avg_loss_seg},
-                self.global_step,
-                "loss/segmentation",
-            )
-            visualization.plot(
-                self.context,
-                {"validation": avg_loss_G},
-                self.global_step,
-                "loss/synthesis_G",
-                )
-            visualization.plot(
-                self.context,
-                {"validation": avg_loss_D},
-                self.global_step,
-                "loss/synthesis_D",
-                )
-
-            visualization.plot(
-                self.context,
-                {"validation": avg_loss_interp},
-                self.global_step,
-                "loss/interpolation",
-            )
-            visualization.plot(
-                self.context,
-                {"synth_psnr": avg_psnr_synth},
-                self.global_step,
-                tag="psnr",
-                )
 
     def validate(self):
         n_batches = len(self.dataloaders.val)
@@ -594,15 +414,7 @@ class Trainer:
         }
 
         # ---- logging ----
-        self._log_validation(
-            metrics["loss"]["seg"],
-            metrics["loss"]["interp"],
-            metrics["loss"]["synth_G"],
-            metrics["loss"]["synth_D"],
-            metrics["dice"]["seg"],
-            metrics["dice"]["interp"],
-            metrics["psnr"]["synth"],
-        )
+        log_validation(metrics)
 
         return metrics
 
@@ -637,7 +449,7 @@ class Trainer:
             if self.train_stage == 0:
                 seg_val_history.append(val_metrics["dice"]["seg"])
                 if len(seg_val_history) == seg_val_history.maxlen:
-                    ri = self.relative_improvement(seg_val_history)
+                    ri = relative_improvement(seg_val_history)
                     if ri < 0.005:
                         self.context.logger.info(f"Segmentation converged with RI={ri:.4f}. Moving to Stage 2.")
                         self.train_stage = 1
@@ -647,7 +459,7 @@ class Trainer:
             if self.train_stage == 1:
                 interp_val_history.append(val_metrics["dice"]["interp"])
                 if len(interp_val_history) == interp_val_history.maxlen:
-                    ri = self.relative_improvement(interp_val_history)
+                    ri = relative_improvement(interp_val_history)
                     if ri < 0.005:
                         self.context.logger.info(f"Interpolation converged with RI={ri:.4f}. Moving to Stage 3.")
                         self.train_stage = 2
@@ -657,7 +469,7 @@ class Trainer:
             if self.train_stage == 2:
                 synth_val_history.append(val_metrics["psnr"]["synth"])
                 if len(synth_val_history) == synth_val_history.maxlen:
-                    ri = self.relative_improvement(synth_val_history)
+                    ri = relative_improvement(synth_val_history)
                     if ri < 0.005:
                         self.context.logger.info(f"Synthesis converged with RI={ri:.4f}. Moving to Stage 4.")
                         self.train_stage = 3
@@ -665,7 +477,7 @@ class Trainer:
             if self.train_stage == 3:
                 final_val_history.append(val_metrics["psnr"]["synth"])
                 if len(final_val_history) == final_val_history.maxlen:
-                    ri = self.relative_improvement(final_val_history)
+                    ri = relative_improvement(final_val_history)
                     if ri < 0.005:
                         self.context.logger.info(
                                 f"Training converged. Stopping training with RI={ri:.4f}."

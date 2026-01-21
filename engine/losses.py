@@ -332,64 +332,6 @@ class L1Loss(BaseLoss):
 
         return loss, {"l1": metric}
 
-class OASISGanLoss(BaseLoss):
-    def __init__(self, opt, device):
-        super().__init__()
-        self.opt = opt
-        self.device = device
-
-    def get_n1_target(self, disc_pred, seg, target_is_real):
-        targets = self.get_target_tensor(disc_pred, target_is_real)
-        num_of_classes = seg.shape[1]
-        integers = torch.argmax(seg, dim=1)
-        targets = targets[:, 0, :, :] * num_of_classes
-        integers += targets.long()
-        integers = torch.clamp(integers, min=num_of_classes-1) - num_of_classes + 1
-        return integers
-
-    def get_target_tensor(self, disc_pred, target_is_real):
-        fill_value = 1.0 if target_is_real else 0.0
-        return torch.full_like(disc_pred, fill_value, device=self.device, requires_grad=False)
-
-    def loss_labelmix(self, mask, output_D_mixed, output_D_fake, output_D_real):
-        mixed_D_output = mask * output_D_real + (1-mask) * output_D_fake
-        return F.mse_loss(mixed_D_output, output_D_mixed)
-
-    def forward(self, disc_pred: torch.Tensor, seg: torch.Tensor, label_canny: torch.Tensor, for_real: bool):
-        # Split discriminator outputs: classes vs edges
-        input_canny = disc_pred[:, -1:, :, :]
-        input_classes = disc_pred[:, :-1, :, :]
-
-        # Compute per-pixel class balancing
-        weight_map = get_class_balancing(self.opt, input_classes, seg)
-
-        # n+1 loss targets
-        target = self.get_n1_target(input_classes, seg, for_real)
-        loss = F.cross_entropy(input_classes, target, reduction='none')
-
-        
-        label_canny = (label_canny > 0).float()
-
-
-        # Edge loss
-        if for_real:
-            canny_loss = F.binary_cross_entropy_with_logits(input_canny, label_canny)
-        else:
-            target_canny = torch.zeros_like(label_canny, device=self.device)
-            canny_loss = F.binary_cross_entropy_with_logits(input_canny, target_canny)
-
-        # Apply class weighting to class loss (only for real)
-        if for_real:
-            loss = torch.mean(loss * weight_map[:, 0, :, :])
-            canny_loss = torch.mean(canny_loss)
-        else:
-            loss = torch.mean(loss)
-            canny_loss = torch.mean(canny_loss)
-
-        loss = loss + 0.3 * canny_loss
-
-        return loss, {'gan': loss, 'canny': canny_loss}
-    
 
 class CompositeLoss(BaseLoss):
     def __init__(self, losses: dict[str, tuple[BaseLoss, float]]):
