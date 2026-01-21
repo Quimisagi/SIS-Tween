@@ -55,6 +55,14 @@ def prepare_synth_gan_inputs(batch, device, num_classes: int):
     return seg, edge, input_class
 
 
+def prepare_interp_input_from_seg(seg_onehot, image):
+    """
+    seg_onehot: [B, C, H, W]
+    image: [B, 3, H, W]
+    """
+    return torch.cat([image, seg_onehot], dim=1)
+
+
 # -----------------------------
 # Segmentator
 # -----------------------------
@@ -312,3 +320,141 @@ def run_synthesizer_gan(
         loss_G_total += loss_G.item()
 
     return fake, loss_G_total, loss_D_total
+
+
+def joint_seg_interp_synth_step(
+    segmentator,
+    interpolator,
+    synthesizer_G,
+    synthesizer_D,
+    loss_fn,
+    batch,
+    device,
+    num_classes: int,
+    optimizer_seg=None,
+    optimizer_interp=None,
+    optimizer_G=None,
+    optimizer_D=None,
+    training: bool = True,
+):
+    """
+    Flow:
+      img0,img1,img2
+        ↓
+      segmentator(img0,img1,img2)
+        ↓ (seg predictions)
+      interpolator(seg0+img0 , seg2+img2) → seg1_hat
+        ↓
+      synthesizer(seg1_hat) → img1_hat
+        ↓
+      single loss_fn backward through everything
+    """
+
+    segmentator.train(training)
+    interpolator.train(training)
+    synthesizer_G.train(training)
+    synthesizer_D.train(training)
+
+    grad_ctx = torch.enable_grad() if training else torch.no_grad()
+
+    with grad_ctx:
+        # -----------------------------
+        # Zero grads
+        # -----------------------------
+        if training:
+            for opt in [optimizer_seg, optimizer_interp, optimizer_G, optimizer_D]:
+                if opt is not None:
+                    opt.zero_grad(set_to_none=True)
+
+        # -----------------------------
+        # 1) SEGMENTATION (all frames)
+        # -----------------------------
+        imgs = [img.to(device) for img in batch.images]
+        gt_labels = [lbl.to(device) for lbl in batch.labels]
+
+        seg_logits = [segmentator(img) for img in imgs]
+        seg_preds = [torch.softmax(s, dim=1) for s in seg_logits]
+
+        seg_targets = [
+            prepare_label(lbl, device, num_classes) for lbl in gt_labels
+        ]
+
+        # -----------------------------
+        # 2) INTERPOLATION (use seg predictions)
+        # -----------------------------
+        interp_in_a = prepare_interp_input_from_seg(seg_preds[0], imgs[0])
+        interp_in_b = prepare_interp_input_from_seg(seg_preds[2], imgs[2])
+
+        seg_mid_hat = interpolator(interp_in_a, interp_in_b)
+
+        # -----------------------------
+        # 3) SYNTHESIS (use interpolated seg)
+        # -----------------------------
+        input_class = batch.class_index[0].to(device)
+        if torch.is_tensor(input_class):
+            input_class = int(input_class.item())
+
+        fake_mid = synthesizer_G(seg_mid_hat, input_class)
+
+        # -----------------------------
+        # 4) DISCRIMINATOR
+        # -----------------------------
+        real_mid = imgs[1]
+        edge_mid = batch.edges[1].to(device)
+
+        disc_real = synthesizer_D(real_mid)
+        disc_fake = synthesizer_D(fake_mid)
+
+        # -----------------------------
+        # 5) SINGLE LOSS
+        # -----------------------------
+        loss_batch = {
+            "seg": {
+                "pred": seg_logits[1],
+                "target": seg_targets[1],
+            },
+            "interp": {
+                "pred": seg_mid_hat,
+                "target": seg_targets[1],
+            },
+            "synth_G": {
+                "disc_pred": disc_fake,
+                "seg": seg_mid_hat,
+                "label_canny": edge_mid,
+                "for_real": True,
+                "pred": fake_mid,
+                "target": real_mid,
+            },
+            "synth_D_real": {
+                "disc_pred": disc_real,
+                "seg": seg_targets[1],
+                "label_canny": edge_mid,
+                "for_real": True,
+            },
+            "synth_D_fake": {
+                "disc_pred": disc_fake.detach(),
+                "seg": seg_targets[1],
+                "label_canny": edge_mid,
+                "for_real": False,
+            },
+        }
+
+        total_loss, metrics = loss_fn(loss_batch)
+
+        assert torch.isfinite(total_loss)
+
+        # -----------------------------
+        # 6) BACKWARD (once)
+        # -----------------------------
+        if training:
+            total_loss.backward()
+
+            for opt in [optimizer_seg, optimizer_interp, optimizer_G, optimizer_D]:
+                if opt is not None:
+                    opt.step()
+
+    return {
+        "fake_mid": fake_mid.detach(),
+        "loss": total_loss.item(),
+        "metrics": metrics,
+    }

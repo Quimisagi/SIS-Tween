@@ -28,11 +28,11 @@ def get_parser(train: bool = True) -> argparse.ArgumentParser:
     parser.add_argument("--dataset_path", type=str, required=True)
     parser.add_argument("--dataset_mode", type=str, default="coco")
     parser.add_argument("--image_size", type=int, default=256)
-    parser.add_argument("--batch_size", type=int, default=8)
+    parser.add_argument("--batch_size", type=int, default=12)
     parser.add_argument("--no_flip", action="store_true")
 
     # -------------------- Saving / Logging --------------------
-    parser.add_argument("--tensorboard_logs_dir", type=str, default="./runs")
+    parser.add_argument("--tensorboard_logs_dir", type=str, default="./logs/runs")
     parser.add_argument("--save_progress", action="store_true", default=True)
     parser.add_argument("--save_interval", type=int, default=5)
 
@@ -57,7 +57,7 @@ def get_parser(train: bool = True) -> argparse.ArgumentParser:
         "--active_models",
         type=str,
         nargs="+",
-        default=["seg", "interp", "synth"],
+        default=["synth"],
         help="Active sub-models",
     )
 

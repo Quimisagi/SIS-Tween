@@ -6,7 +6,7 @@ from models import Interpolator, Segmentator, Synthesizer, Discriminator
 from utils import visualization
 from utils.psnr import psnr
 from .bundles import Batch
-from .training_steps import run_segmentator, run_interpolator, run_synthesizer_gan
+from .training_steps import run_segmentator, run_interpolator, run_synthesizer_gan, joint_seg_interp_synth_step
 from collections import deque
 from utils.dice_score import dice_score_multiclass
 
@@ -229,7 +229,7 @@ class Trainer:
 
 
     def log_step(self, stage, losses, batch=None, outputs=None):
-        if not self.context.writer or self.global_step % 1000 != 0:
+        if not self.context.writer or self.global_step % 300 != 0:
             return
         loss_str = " ".join(f"{k}={v:.4f}" for k, v in losses.items())
         self.context.logger.info(
@@ -422,40 +422,30 @@ class Trainer:
         for data in self.dataloaders.train:
             batch = self.make_batch(data)
 
-            # Zero grads
-            for opt in ["seg", "interp", "synth", "disc"]:
-                self.optimizers[opt].zero_grad(set_to_none=True)
-
-            # ---------------- Segmentation ----------------
-            seg_out, loss_seg = self.forward_seg(batch, optimizer=None)
-            self.replace_labels_with_segmentation(batch, seg_out)
-            (self.opt.seg_weight * loss_seg).backward(retain_graph=True)
-
-            # ---------------- Interpolation ----------------
-            interp_out, loss_interp = self.forward_interp(batch, optimizer=None)
-            self.replace_middle_with_interpolation(batch, interp_out)
-            (self.opt.interp_weight * loss_interp).backward(retain_graph=True)
-
-            # ---------------- GAN Synthesis ----------------
-            fake_synth_out, loss_G, loss_D = self.forward_synth_gan(
-                batch, optimizer_synth=None, optimizer_disc=None
+            out = joint_seg_interp_synth_step(
+                segmentator=self.seg,
+                interpolator=self.interp,
+                synthesizer_G=self.synth,
+                synthesizer_D=self.disc,
+                loss_fn=self.loss_fn,
+                batch=batch,
+                device=self.device,
+                num_classes=self.opt.semantic_nc,
+                optimizer_seg=self.optimizers["seg"],
+                optimizer_interp=self.optimizers["interp"],
+                optimizer_G=self.optimizers["synth"],
+                optimizer_D=self.optimizers["disc"],
+                training=True,
             )
-            (self.opt.synth_weight * loss_G).backward()
 
-            # ---------------- Optimizer step ----------------
-            for opt in ["seg", "interp", "synth", "disc"]:
-                self.optimizers[opt].step()
-
-            # Logging
             self.log_step(
                 stage="Stage4",
                 losses={
-                    "Segmentation": loss_seg,
-                    "Interpolation": loss_interp,
-                    "Synthesis_G": loss_G,
-                    "Synthesis_D": loss_D,
+                    "Total": out["loss"],
                 },
-                outputs={"seg": seg_out, "interp": interp_out, "synth": fake_synth_out},
+                outputs={
+                    "synth": out["fake_mid"],
+                },
                 batch=batch,
             )
 
@@ -648,7 +638,7 @@ class Trainer:
                 seg_val_history.append(val_metrics["dice"]["seg"])
                 if len(seg_val_history) == seg_val_history.maxlen:
                     ri = self.relative_improvement(seg_val_history)
-                    if ri < 0.001:
+                    if ri < 0.005:
                         self.context.logger.info(f"Segmentation converged with RI={ri:.4f}. Moving to Stage 2.")
                         self.train_stage = 1
                         interp_val_history.clear()
@@ -658,7 +648,7 @@ class Trainer:
                 interp_val_history.append(val_metrics["dice"]["interp"])
                 if len(interp_val_history) == interp_val_history.maxlen:
                     ri = self.relative_improvement(interp_val_history)
-                    if ri < 0.001:
+                    if ri < 0.005:
                         self.context.logger.info(f"Interpolation converged with RI={ri:.4f}. Moving to Stage 3.")
                         self.train_stage = 2
                         synth_val_history.clear()
@@ -668,7 +658,7 @@ class Trainer:
                 synth_val_history.append(val_metrics["psnr"]["synth"])
                 if len(synth_val_history) == synth_val_history.maxlen:
                     ri = self.relative_improvement(synth_val_history)
-                    if ri < 0.001:
+                    if ri < 0.005:
                         self.context.logger.info(f"Synthesis converged with RI={ri:.4f}. Moving to Stage 4.")
                         self.train_stage = 3
                         continue
@@ -676,7 +666,7 @@ class Trainer:
                 final_val_history.append(val_metrics["psnr"]["synth"])
                 if len(final_val_history) == final_val_history.maxlen:
                     ri = self.relative_improvement(final_val_history)
-                    if ri < 0.001:
+                    if ri < 0.005:
                         self.context.logger.info(
                                 f"Training converged. Stopping training with RI={ri:.4f}."
                         )

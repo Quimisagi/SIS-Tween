@@ -95,9 +95,9 @@ def train_fn(opt):
     if "synth" in opt.active_models:
         tasks["synth"] = losses.CompositeLoss(
             {
-                "l1": (losses.L1Loss().to(device), 1.0),
+                "l1": (losses.L1Loss().to(device), 0.5),
                 "vgg": (losses.VGGLoss(vgg=VGG19()).to(device), 1.0),
-                "gan": (losses.OASISGanLoss(opt, device), 0.1),
+                "gan": (losses.OASISGanLoss(opt, device), 0.3),
             }
         ).to(device)
         tasks["disc"] = losses.CompositeLoss(
