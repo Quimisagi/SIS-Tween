@@ -8,7 +8,6 @@ from engine import losses, Trainer, RuntimeContext, DataloaderBundle
 from logs.logger import init_logger
 
 from config import read_arguments
-from models import VGG19
 
 import torch
 
@@ -92,19 +91,6 @@ def train_fn(opt):
             }
         ).to(device)
 
-    if "synth" in opt.active_models:
-        tasks["synth"] = losses.CompositeLoss(
-            {
-                "l1": (losses.L1Loss().to(device), 1.0),
-                "vgg": (losses.VGGLoss(vgg=VGG19()).to(device), 1.0),
-                "gan": (losses.OASISGanLoss(opt, device), 0.1),
-            }
-        ).to(device)
-        tasks["disc"] = losses.CompositeLoss(
-            {
-                "gan": (losses.OASISGanLoss(opt, device), 1.0),
-            }
-        ).to(device)
     loss = losses.MultitaskLoss(**tasks)
 
     # ---- TensorBoard (rank 0 only) ----

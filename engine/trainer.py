@@ -2,13 +2,16 @@ from torch.nn.parallel import DistributedDataParallel
 import torch
 from torch.utils.data import DistributedSampler
 
-from models import Interpolator, Segmentator, Synthesizer, Discriminator
+from models import Interpolator, Segmentator 
 from utils import visualization
 from utils.psnr import psnr
 from .bundles import Batch
-from .training_steps import run_segmentator, run_interpolator, run_synthesizer_gan
+from .training_steps import run_segmentator, run_interpolator, run_synth_gan
 from collections import deque
 from utils.dice_score import dice_score_multiclass
+from utils.relative_improvement import relative_improvement
+from utils.log_helper import log_step, log_validation
+from models.spade.pix2pix_model import Pix2PixModel
 
 import os
 
@@ -20,85 +23,81 @@ class Trainer:
         self.dataloaders = dataloaders
         self.loss_fn = loss_fn
         self.device = context.device
+        self.global_step = 0
+        self.epoch = 0
+        self.train_stage = 0
 
         self.seg = (
             Segmentator(num_seg_classes=opt.semantic_nc).to(self.device)
-            if "seg" in opt.active_models
-            else None
+            if "seg" in opt.active_models else None
         )
+        if self.seg and opt.distributed_enabled and context.world_size > 1:
+            self.seg = DistributedDataParallel(self.seg, device_ids=[context.local_rank])
+
         self.interp = (
             Interpolator(sem_c=opt.semantic_nc, base_c=64).to(self.device)
-            if "interp" in opt.active_models
-            else None
+            if "interp" in opt.active_models else None
         )
-        self.synth = (
-            Synthesizer(opt, context).to(self.device)
-            if "synth" in opt.active_models
-            else None
-        )
-        self.disc = (
-            Discriminator(opt).to(self.device)
-            if "synth" in opt.active_models
-            else None
-        )
-
-        if opt.distributed_enabled and context.world_size > 1:
-            if self.seg:
-                self.seg = DistributedDataParallel(
-                    self.seg, device_ids=[context.local_rank]
-                )
-            if self.interp:
-                self.interp = DistributedDataParallel(
-                    self.interp, device_ids=[context.local_rank]
-                )
-            if self.synth:
-                self.synth = DistributedDataParallel(
-                    self.synth, device_ids=[context.local_rank]
-                )
-            if self.disc:
-                self.disc = DistributedDataParallel(
-                    self.disc, device_ids=[context.local_rank]
-                )
+        if self.interp and opt.distributed_enabled and context.world_size > 1:
+            self.interp = DistributedDataParallel(self.interp, device_ids=[context.local_rank])
 
         self.optimizers = {}
         if self.seg:
-            self.optimizers["seg"] = torch.optim.Adam(
-                self.seg.parameters(), lr=opt.lr_seg
-            )
+            self.optimizers["seg"] = torch.optim.Adam(self.seg.parameters(), lr=opt.lr_seg)
+            print("Segmentation optimizer created.")
         if self.interp:
-            self.optimizers["interp"] = torch.optim.Adam(
-                self.interp.parameters(), lr=opt.lr_interp
-            )
-        if self.synth:
-            self.optimizers["synth"] = torch.optim.Adam(
-                self.synth.parameters(), lr=opt.lr_synth
-            )
-        if self.disc:
-            self.optimizers["disc"] = torch.optim.Adam(
-                self.disc.parameters(), lr=opt.lr_d
-            )
+            self.optimizers["interp"] = torch.optim.Adam(self.interp.parameters(), lr=opt.lr_interp)
 
         self.schedulers = {}
         if self.seg:
-            self.schedulers["seg"] = torch.optim.lr_scheduler.StepLR(
-                self.optimizers["seg"], 10, 0.1
-            )
+            self.schedulers["seg"] = torch.optim.lr_scheduler.StepLR(self.optimizers["seg"], 10, 0.1)
         if self.interp:
-            self.schedulers["interp"] = torch.optim.lr_scheduler.StepLR(
-                self.optimizers["interp"], 10, 0.1
-            )
-        if self.synth:
-            self.schedulers["synth"] = torch.optim.lr_scheduler.StepLR(
-                self.optimizers["synth"], 10, 0.1
-            )
-        if self.disc:
-            self.schedulers["disc"] = torch.optim.lr_scheduler.StepLR(
-                self.optimizers["disc"], 10, 0.1
-            )
+            self.schedulers["interp"] = torch.optim.lr_scheduler.StepLR(self.optimizers["interp"], 10, 0.1)
 
-        self.epoch = 0
-        self.global_step = 0
-        self.train_stage = 0
+        if "synth" in opt.active_models:
+            self.synth = Pix2PixModel(opt)
+            if context.world_size > 1:
+                self.synth = DistributedDataParallel(self.synth, device_ids=[context.local_rank])
+                self.synth_on_one_gpu = self.synth.module
+            else:
+                self.synth.to(self.device)
+                self.synth_on_one_gpu = self.synth
+
+            if opt.isTrain:
+                self.optimizers["synth"], self.optimizers["disc"] = self.synth_on_one_gpu.create_optimizers(opt)
+                self.old_lr = opt.lr
+
+
+
+
+    def update_learning_rate(self):
+        """Updates learning rate for Synth based on SPADE logic."""
+        # You should call this in your epoch loop
+        if not self.synth: return
+        
+        if self.epoch > self.opt.niter:
+            lrd = self.opt.lr / self.opt.niter_decay
+            new_lr = self.old_lr - lrd
+        else:
+            new_lr = self.old_lr
+
+        if new_lr != self.old_lr:
+            # Handle TTUR (Two Time-Scale Update Rule) if enabled in opt
+            if getattr(self.opt, 'no_TTUR', True):
+                new_lr_G = new_lr
+                new_lr_D = new_lr
+            else:
+                new_lr_G = new_lr / 2
+                new_lr_D = new_lr * 2
+
+            for param_group in self.optimizers["disc"].param_groups:
+                param_group['lr'] = new_lr_D
+            for param_group in self.optimizers["synth"].param_groups:
+                param_group['lr'] = new_lr_G
+            
+            if self.context.logger:
+                self.context.logger.info(f'update learning rate: {self.old_lr} -> {new_lr}')
+            self.old_lr = new_lr
 
     def save_checkpoint(self, path: str):
         """Save the full training state to a checkpoint file."""
@@ -119,8 +118,6 @@ class Trainer:
             state["model"]["interp"] = self.interp.module.state_dict() if hasattr(self.interp, "module") else self.interp.state_dict()
         if self.synth:
             state["model"]["synth"] = self.synth.module.state_dict() if hasattr(self.synth, "module") else self.synth.state_dict()
-        if self.disc:
-            state["model"]["disc"] = self.disc.module.state_dict() if hasattr(self.disc, "module") else self.disc.state_dict()
 
         # Save optimizers
         for k, opt in self.optimizers.items():
@@ -140,62 +137,17 @@ class Trainer:
         """
         return Batch(images=data["images"], labels=data["labels"], edges=data["edges"], class_index=data["class_index"])
 
-    def relative_improvement(self, values, eps: float = 1e-8) -> float:
-        """
-        Computes a *stability-aware* relative improvement over a sequence.
-
-        The metric considers **all values**, not just first/last:
-
-        1. Compute relative improvement from the mean of the first half
-           to the mean of the second half
-        2. Penalize non-stable sequences using normalized variance
-
-        Returns:
-            RI = improvement * stability
-
-        Where:
-            improvement = (mean_old - mean_new) / max(|mean_old|, eps)
-            stability   = 1 / (1 + coeff_variation)
-        """
-        n = len(values)
-        values = list(values)
-        if n < 2:
-            return 0.0
-
-        # Split sequence
-        mid = n // 2
-        first = values[:mid]
-        second = values[mid:]
-
-        mean_old = sum(first) / len(first)
-        mean_new = sum(second) / len(second)
-
-        improvement = (mean_old - mean_new) / max(abs(mean_old), eps)
-
-        # Stability: coefficient of variation over full window
-        mean_all = sum(values) / n
-        var = sum((v - mean_all) ** 2 for v in values) / n
-        std = var ** 0.5
-        coeff_variation = std / max(abs(mean_all), eps)
-
-        stability = 1.0 / (1.0 + coeff_variation)
-
-        return abs(improvement * stability)
 
     def replace_labels_with_segmentation(self, batch: Batch, seg_output):
         if seg_output is not None:
-            batch.labels = [seg.detach().argmax(dim=1) for seg in seg_output]
+            batch.labels = [
+                seg.detach().argmax(dim=1, keepdim=True)
+                for seg in seg_output
+            ]
 
     def replace_middle_with_interpolation(self, batch: Batch, interp_output):
         if interp_output is not None:
             batch.labels[1] = interp_output.detach().argmax(dim=1)
-
-    def safe_detach(self, x):
-        if x is None:
-            return None
-        if isinstance(x, list):
-            return [t.detach().cpu() for t in x]
-        return x.detach().cpu()
 
 
     def forward_seg(self, batch, optimizer=None, require_grad=True):
@@ -212,71 +164,17 @@ class Trainer:
             self.interp, self.loss_fn, batch, self.device, optimizer, training=require_grad
         )
 
-
-    def forward_synth_gan(self, batch, optimizer_synth=None, optimizer_disc=None, require_grad=True):
-        if not self.synth or not self.disc:
+    def forward_synth_gan(self, batch, optimizers, require_grad=True):
+        if not self.synth:
             return None, 0.0, 0.0
-        return run_synthesizer_gan(
-            self.synth,
-            self.disc,
-            self.loss_fn,
+        return run_synth_gan(
+            self.synth_on_one_gpu,
+            optimizers,
             batch,
-            self.device,
-            optimizer_synth,
-            optimizer_disc,
-            training=require_grad,  
+            context=self.context,
+            training=require_grad,
         )
 
-
-    def log_step(self, stage, losses, batch=None, outputs=None):
-        if not self.context.writer or self.global_step % 1000 != 0:
-            return
-        loss_str = " ".join(f"{k}={v:.4f}" for k, v in losses.items())
-        self.context.logger.info(
-            f"[{stage}][Epoch:{self.epoch+1}/{self.opt.epochs}][Step:{self.global_step}] {loss_str}"
-        )
-        if "Segmentation" in losses:
-            visualization.plot(
-                self.context,
-                {"train": losses["Segmentation"]},
-                self.global_step,
-                "loss/segmentation",
-            )
-        if "Interpolation" in losses:
-            visualization.plot(
-                self.context,
-                {"train": losses["Interpolation"]},
-                self.global_step,
-                "loss/interpolation",
-            )
-        if "Synthesis_G" in losses:
-            visualization.plot(
-                self.context,
-                {"train": losses["Synthesis_G"]},
-                self.global_step,
-                "loss/synthesis_G",
-            )
-        if "Synthesis_D" in losses:
-            visualization.plot(
-                self.context,
-                {"train": losses["Synthesis_D"]},
-                self.global_step,
-                "loss/synthesis_D",
-            )
-
-        outputs = {
-                k: self.safe_detach(v) for k, v in (outputs or {}).items()
-        }
-
-        if batch is not None and outputs is not None:
-            visualization.samples_comparison(
-                self.context,
-                batch.images,
-                batch.labels,
-                outputs,
-                self.global_step,
-                tag="samples",
-            )
 
     def freeze(self, net):
         if not net:
@@ -296,7 +194,6 @@ class Trainer:
         self.unfreeze(self.seg)
         self.unfreeze(self.interp)
         self.unfreeze(self.synth)
-        self.unfreeze(self.disc)
 
         for data in self.dataloaders.train:
             batch = self.make_batch(data)
@@ -309,11 +206,14 @@ class Trainer:
             )
             fake_synth_out, loss_G, loss_D = self.forward_synth_gan(
                 batch,
-                optimizer_synth=self.optimizers["synth"],
-                optimizer_disc=self.optimizers["disc"],
+                optimizers=self.optimizers,
             )
 
-            self.log_step(
+            log_step(
+                context=self.context,
+                opt = self.opt,
+                global_step=self.global_step,
+                epoch=self.epoch,
                 stage="Stage1",
                 losses={
                     "Segmentation": loss_seg,
@@ -333,27 +233,32 @@ class Trainer:
         self.freeze(self.seg)
         self.unfreeze(self.interp)
         self.unfreeze(self.synth)
-        self.unfreeze(self.disc)
 
         for data in self.dataloaders.train:
             batch = self.make_batch(data)
 
+            # Segmentation teacher (no grad, no optimizer)
             with torch.no_grad():
                 seg_out, loss_seg = self.forward_seg(batch, require_grad=False)
 
             self.replace_labels_with_segmentation(batch, seg_out)
 
+            # Train interpolation
             interp_out, loss_interp = self.forward_interp(
                 batch, optimizer=self.optimizers["interp"]
             )
 
+            # Train synthesis GAN
             fake_synth_out, loss_G, loss_D = self.forward_synth_gan(
                 batch,
-                optimizer_synth=self.optimizers["synth"],
-                optimizer_disc=self.optimizers["disc"],
+                optimizers=self.optimizers,
             )
 
-            self.log_step(
+            log_step(
+                context=self.context,
+                opt=self.opt,
+                global_step=self.global_step,
+                epoch=self.epoch,
                 stage="Stage2",
                 losses={
                     "Segmentation": loss_seg,
@@ -361,42 +266,45 @@ class Trainer:
                     "Synthesis_G": loss_G,
                     "Synthesis_D": loss_D,
                 },
-                outputs={"seg": seg_out, "interp": interp_out, "synth": fake_synth_out},
+                outputs={
+                    "seg": [s.detach().cpu() for s in seg_out] if seg_out is not None else None,
+                    "interp": interp_out.detach().cpu() if interp_out is not None else None,
+                    "synth": fake_synth_out.detach().cpu() if fake_synth_out is not None else None,
+                },
                 batch=batch,
             )
             self.global_step += 1
 
+
     def stage3_frozen_seg_and_interp(self):
-        # Freeze teachers
         self.freeze(self.seg)
         self.freeze(self.interp)
-
-        # Train GAN
         self.unfreeze(self.synth)
-        self.unfreeze(self.disc)
 
         for data in self.dataloaders.train:
             batch = self.make_batch(data)
 
-            # Teacher segmentation (no grads)
+            # Teacher segmentation
             with torch.no_grad():
                 seg_out, loss_seg = self.forward_seg(batch, require_grad=False)
-
             self.replace_labels_with_segmentation(batch, seg_out)
 
+            # Teacher interpolation
             with torch.no_grad():
-                interp_out, loss_interp = self.forward_interp(batch, optimizer=None)
-
+                interp_out, loss_interp = self.forward_interp(batch, require_grad=False)
             self.replace_middle_with_interpolation(batch, interp_out)
 
-            # GAN update
+            # Train synthesis GAN only
             fake_synth_out, loss_G, loss_D = self.forward_synth_gan(
                 batch,
-                optimizer_synth=self.optimizers["synth"],
-                optimizer_disc=self.optimizers["disc"],
+                optimizers=self.optimizers,
             )
 
-            self.log_step(
+            log_step(
+                context=self.context,
+                opt=self.opt,
+                global_step=self.global_step,
+                epoch=self.epoch,
                 stage="Stage3",
                 losses={
                     "Segmentation": loss_seg,
@@ -405,107 +313,51 @@ class Trainer:
                     "Synthesis_D": loss_D,
                 },
                 outputs={
-                    "seg": seg_out,
-                    "interp": interp_out,
-                    "synth": fake_synth_out,
+                    "seg": [s.detach().cpu() for s in seg_out] if seg_out is not None else None,
+                    "interp": interp_out.detach().cpu() if interp_out is not None else None,
+                    "synth": fake_synth_out.detach().cpu() if fake_synth_out is not None else None,
                 },
                 batch=batch,
             )
             self.global_step += 1
 
-    def stage4_joint_finetune(self):
-        self.unfreeze(self.seg)
-        self.unfreeze(self.interp)
-        self.unfreeze(self.synth)
-        self.unfreeze(self.disc)
+    # def stage4_joint_finetune(self):
+    #     self.unfreeze(self.seg)
+    #     self.unfreeze(self.interp)
+    #     self.unfreeze(self.synth)
 
-        for data in self.dataloaders.train:
-            batch = self.make_batch(data)
+    #     for data in self.dataloaders.train:
+    #         batch = self.make_batch(data)
 
-            # Zero grads
-            for opt in ["seg", "interp", "synth", "disc"]:
-                self.optimizers[opt].zero_grad(set_to_none=True)
+    #         out = joint_seg_interp_synth_step(
+    #             segmentator=self.seg,
+    #             interpolator=self.interp,
+    #             synthesizer_G=self.synth,
+    #             synthesizer_D=self.disc,
+    #             loss_fn=self.loss_fn,
+    #             batch=batch,
+    #             device=self.device,
+    #             num_classes=self.opt.semantic_nc,
+    #             optimizer_seg=self.optimizers["seg"],
+    #             optimizer_interp=self.optimizers["interp"],
+    #             optimizer_G=self.optimizers["synth"],
+    #             optimizer_D=self.optimizers["disc"],
+    #             training=True,
+    #         )
 
-            # ---------------- Segmentation ----------------
-            seg_out, loss_seg = self.forward_seg(batch, optimizer=None)
-            self.replace_labels_with_segmentation(batch, seg_out)
-            (self.opt.seg_weight * loss_seg).backward(retain_graph=True)
+    #         self.log_step(
+    #             stage="Stage4",
+    #             losses={
+    #                 "Total": out["loss"],
+    #             },
+    #             outputs={
+    #                 "synth": out["fake_mid"],
+    #             },
+    #             batch=batch,
+    #         )
 
-            # ---------------- Interpolation ----------------
-            interp_out, loss_interp = self.forward_interp(batch, optimizer=None)
-            self.replace_middle_with_interpolation(batch, interp_out)
-            (self.opt.interp_weight * loss_interp).backward(retain_graph=True)
+    #         self.global_step += 1
 
-            # ---------------- GAN Synthesis ----------------
-            fake_synth_out, loss_G, loss_D = self.forward_synth_gan(
-                batch, optimizer_synth=None, optimizer_disc=None
-            )
-            (self.opt.synth_weight * loss_G).backward()
-
-            # ---------------- Optimizer step ----------------
-            for opt in ["seg", "interp", "synth", "disc"]:
-                self.optimizers[opt].step()
-
-            # Logging
-            self.log_step(
-                stage="Stage4",
-                losses={
-                    "Segmentation": loss_seg,
-                    "Interpolation": loss_interp,
-                    "Synthesis_G": loss_G,
-                    "Synthesis_D": loss_D,
-                },
-                outputs={"seg": seg_out, "interp": interp_out, "synth": fake_synth_out},
-                batch=batch,
-            )
-
-            self.global_step += 1
-
-    def _log_validation(
-        self, avg_loss_seg, avg_loss_interp, avg_loss_G, avg_loss_D, avg_dice_seg, avg_dice_interp, avg_psnr_synth
-    ):
-        if self.context.logger:
-            self.context.logger.info(
-                    f"[Validation] Seg_Loss={avg_loss_seg:.4f}, Interp_Loss={avg_loss_interp:.4f}, Synth_G_Loss={avg_loss_G:.4f}, Synth_D_Loss={avg_loss_D:.4f}, Dice_Seg={avg_dice_seg:.4f}, Dice_Interp={avg_dice_interp:.4f}"
-            )
-        if self.context.writer:
-            visualization.plot(
-                self.context,
-                {"segmentation": avg_dice_seg, "interpolation": avg_dice_interp},
-                self.global_step,
-                tag="dice",
-            )
-            visualization.plot(
-                self.context,
-                {"validation": avg_loss_seg},
-                self.global_step,
-                "loss/segmentation",
-            )
-            visualization.plot(
-                self.context,
-                {"validation": avg_loss_G},
-                self.global_step,
-                "loss/synthesis_G",
-                )
-            visualization.plot(
-                self.context,
-                {"validation": avg_loss_D},
-                self.global_step,
-                "loss/synthesis_D",
-                )
-
-            visualization.plot(
-                self.context,
-                {"validation": avg_loss_interp},
-                self.global_step,
-                "loss/interpolation",
-            )
-            visualization.plot(
-                self.context,
-                {"synth_psnr": avg_psnr_synth},
-                self.global_step,
-                tag="psnr",
-                )
 
     def validate(self):
         n_batches = len(self.dataloaders.val)
@@ -532,7 +384,7 @@ class Trainer:
 
                 seg_out, loss_seg = self.forward_seg(batch, require_grad=False)
                 interp_out, loss_interp = self.forward_interp(batch, require_grad=False)
-                fake_synth_out, loss_G, loss_D = self.forward_synth_gan(batch, require_grad=False)
+                fake_synth_out, loss_G, loss_D = self.forward_synth_gan(batch, self.optimizers, require_grad=False)
 
                 outputs = {
                     "seg": seg_out,
@@ -604,15 +456,7 @@ class Trainer:
         }
 
         # ---- logging ----
-        self._log_validation(
-            metrics["loss"]["seg"],
-            metrics["loss"]["interp"],
-            metrics["loss"]["synth_G"],
-            metrics["loss"]["synth_D"],
-            metrics["dice"]["seg"],
-            metrics["dice"]["interp"],
-            metrics["psnr"]["synth"],
-        )
+        log_validation(self.context, self.global_step, metrics)
 
         return metrics
 
@@ -629,6 +473,8 @@ class Trainer:
             for s in self.schedulers.values():
                 s.step()
 
+            self.update_learning_rate()
+
             # -------- TRAIN --------
             if self.train_stage == 0:
                 self.stage1_warmup()
@@ -636,51 +482,51 @@ class Trainer:
                 self.stage2_frozen_seg()
             elif self.train_stage == 2:
                 self.stage3_frozen_seg_and_interp()
-            elif self.train_stage == 3:
-                self.stage4_joint_finetune()
+            # elif self.train_stage == 3:
+            #     self.stage4_joint_finetune()
 
             # -------- VALIDATE --------
             val_metrics = self.validate()
 
             # -------- STAGE TRANSITIONS --------
 
-            if self.train_stage == 0:
-                seg_val_history.append(val_metrics["dice"]["seg"])
-                if len(seg_val_history) == seg_val_history.maxlen:
-                    ri = self.relative_improvement(seg_val_history)
-                    if ri < 0.001:
-                        self.context.logger.info(f"Segmentation converged with RI={ri:.4f}. Moving to Stage 2.")
-                        self.train_stage = 1
-                        interp_val_history.clear()
-                        continue
+            # if self.train_stage == 0:
+            #     seg_val_history.append(val_metrics["dice"]["seg"])
+            #     if len(seg_val_history) == seg_val_history.maxlen:
+            #         ri = relative_improvement(seg_val_history)
+            #         if ri < 0.005:
+            #             self.context.logger.info(f"Segmentation converged with RI={ri:.4f}. Moving to Stage 2.")
+            #             self.train_stage = 1
+            #             interp_val_history.clear()
+            #             continue
 
-            if self.train_stage == 1:
-                interp_val_history.append(val_metrics["dice"]["interp"])
-                if len(interp_val_history) == interp_val_history.maxlen:
-                    ri = self.relative_improvement(interp_val_history)
-                    if ri < 0.001:
-                        self.context.logger.info(f"Interpolation converged with RI={ri:.4f}. Moving to Stage 3.")
-                        self.train_stage = 2
-                        synth_val_history.clear()
-                        continue
+            # if self.train_stage == 1:
+            #     interp_val_history.append(val_metrics["dice"]["interp"])
+            #     if len(interp_val_history) == interp_val_history.maxlen:
+            #         ri = relative_improvement(interp_val_history)
+            #         if ri < 0.005:
+            #             self.context.logger.info(f"Interpolation converged with RI={ri:.4f}. Moving to Stage 3.")
+            #             self.train_stage = 2
+            #             synth_val_history.clear()
+            #             continue
 
-            if self.train_stage == 2:
-                synth_val_history.append(val_metrics["psnr"]["synth"])
-                if len(synth_val_history) == synth_val_history.maxlen:
-                    ri = self.relative_improvement(synth_val_history)
-                    if ri < 0.001:
-                        self.context.logger.info(f"Synthesis converged with RI={ri:.4f}. Moving to Stage 4.")
-                        self.train_stage = 3
-                        continue
-            if self.train_stage == 3:
-                final_val_history.append(val_metrics["psnr"]["synth"])
-                if len(final_val_history) == final_val_history.maxlen:
-                    ri = self.relative_improvement(final_val_history)
-                    if ri < 0.001:
-                        self.context.logger.info(
-                                f"Training converged. Stopping training with RI={ri:.4f}."
-                        )
-                        break
+            # if self.train_stage == 2:
+            #     synth_val_history.append(val_metrics["psnr"]["synth"])
+            #     if len(synth_val_history) == synth_val_history.maxlen:
+            #         ri = relative_improvement(synth_val_history)
+            #         if ri < 0.005:
+            #             self.context.logger.info(f"Synthesis converged with RI={ri:.4f}. Moving to Stage 4.")
+            #             self.train_stage = 3
+            #             continue
+            # if self.train_stage == 3:
+            #     final_val_history.append(val_metrics["psnr"]["synth"])
+            #     if len(final_val_history) == final_val_history.maxlen:
+            #         ri = relative_improvement(final_val_history)
+            #         if ri < 0.005:
+            #             self.context.logger.info(
+            #                     f"Training converged. Stopping training with RI={ri:.4f}."
+            #             )
+            #             break
 
             # -------- SAVE CHECKPOINT --------
             if (self.epoch + 1) % 5 == 0:
