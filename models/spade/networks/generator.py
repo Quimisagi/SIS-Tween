@@ -6,16 +6,17 @@ Licensed under the CC BY-NC-SA 4.0 license (https://creativecommons.org/licenses
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from models.networks.base_network import BaseNetwork
-from models.networks.normalization import get_nonspade_norm_layer
-from models.networks.architecture import ResnetBlock as ResnetBlock
-from models.networks.architecture import SPADEResnetBlock as SPADEResnetBlock
+from .base_network import BaseNetwork
+from .normalization import get_nonspade_norm_layer
+from .architecture import ResnetBlock as ResnetBlock
+from .architecture import SPADEResnetBlock as SPADEResnetBlock
 
 
 class SPADEGenerator(BaseNetwork):
     @staticmethod
     def modify_commandline_options(parser, is_train):
-        parser.set_defaults(norm_G='spectralspadesyncbatch3x3')
+        
+        parser.set_defaults(norm_G='spectralspadeinstance3x3')
         parser.add_argument('--num_upsampling_layers',
                             choices=('normal', 'more', 'most'), default='normal',
                             help="If 'more', adds upsampling layer between the two middle resnet blocks. If 'most', also add one more upsampling + resnet layer at the end of the generator")
@@ -68,7 +69,7 @@ class SPADEGenerator(BaseNetwork):
             raise ValueError('opt.num_upsampling_layers [%s] not recognized' %
                              opt.num_upsampling_layers)
 
-        sw = opt.crop_size // (2**num_up_layers)
+        sw = opt.image_size // (2**num_up_layers)
         sh = round(sw / opt.aspect_ratio)
 
         return sw, sh
@@ -132,7 +133,7 @@ class Pix2PixHDGenerator(BaseNetwork):
 
     def __init__(self, opt):
         super().__init__()
-        input_nc = opt.label_nc + (1 if opt.contain_dontcare_label else 0) + (0 if opt.no_instance else 1)
+        input_nc = opt.semantic_nc + (1 if opt.contain_dontcare_label else 0) + (0 if opt.no_instance else 1)
 
         norm_layer = get_nonspade_norm_layer(opt, opt.norm_G)
         activation = nn.ReLU(False)

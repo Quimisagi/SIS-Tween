@@ -6,9 +6,9 @@ Licensed under the CC BY-NC-SA 4.0 license (https://creativecommons.org/licenses
 import torch.nn as nn
 import numpy as np
 import torch.nn.functional as F
-from models.networks.base_network import BaseNetwork
-from models.networks.normalization import get_nonspade_norm_layer
-import util.util as util
+from .base_network import BaseNetwork
+from .normalization import get_nonspade_norm_layer
+from ..util import util as util
 
 
 class MultiscaleDiscriminator(BaseNetwork):
@@ -100,7 +100,7 @@ class NLayerDiscriminator(BaseNetwork):
             self.add_module('model' + str(n), nn.Sequential(*sequence[n]))
 
     def compute_D_input_nc(self, opt):
-        input_nc = opt.label_nc + opt.output_nc
+        input_nc = opt.semantic_nc + opt.output_nc
         if opt.contain_dontcare_label:
             input_nc += 1
         if not opt.no_instance:

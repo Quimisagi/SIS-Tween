@@ -4,8 +4,8 @@ Licensed under the CC BY-NC-SA 4.0 license (https://creativecommons.org/licenses
 """
 
 import torch
-import models.networks as networks
-import util.util as util
+from .util import util as util
+from . import networks
 
 
 class Pix2PixModel(torch.nn.Module):
@@ -110,14 +110,14 @@ class Pix2PixModel(torch.nn.Module):
         data['label'] = data['label'].long()
         if self.use_gpu():
             data['label'] = data['label'].cuda()
-            data['instance'] = data['instance'].cuda()
+            # data['instance'] = data['instance'].cuda()
             data['image'] = data['image'].cuda()
 
         # create one-hot label map
         label_map = data['label']
         bs, _, h, w = label_map.size()
-        nc = self.opt.label_nc + 1 if self.opt.contain_dontcare_label \
-            else self.opt.label_nc
+        nc = self.opt.semantic_nc + 1 if self.opt.contain_dontcare_label \
+            else self.opt.semantic_nc
         input_label = self.FloatTensor(bs, nc, h, w).zero_()
         input_semantics = input_label.scatter_(1, label_map, 1.0)
 

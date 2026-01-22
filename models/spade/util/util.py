@@ -12,7 +12,7 @@ from PIL import Image
 import os
 import argparse
 import dill as pickle
-import util.coco
+from . import coco
 
 
 def save_obj(obj, name):
@@ -179,6 +179,8 @@ def str2bool(v):
 
 def find_class_in_module(target_cls_name, module):
     target_cls_name = target_cls_name.replace('_', '').lower()
+    if module.startswith('models.networks'):
+        module = module.replace('models.networks', 'models.spade.networks')
     clslib = importlib.import_module(module)
     cls = None
     for name, clsobj in clslib.__dict__.items():

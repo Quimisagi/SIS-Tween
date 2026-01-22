@@ -7,7 +7,7 @@ import re
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from models.networks.sync_batchnorm import SynchronizedBatchNorm2d
+# from networks.sync_batchnorm import SynchronizedBatchNorm2d
 import torch.nn.utils.spectral_norm as spectral_norm
 
 
@@ -62,9 +62,9 @@ def get_nonspade_norm_layer(opt, norm_type='instance'):
 # Example |config_text| will be spadesyncbatch3x3, or spadeinstance5x5.
 # Also, the other arguments are
 # |norm_nc|: the #channels of the normalized activations, hence the output dim of SPADE
-# |label_nc|: the #channels of the input semantic map, hence the input dim of SPADE
+# |semantic_nc|: the #channels of the input semantic map, hence the input dim of SPADE
 class SPADE(nn.Module):
-    def __init__(self, config_text, norm_nc, label_nc):
+    def __init__(self, config_text, norm_nc, semantic_nc):
         super().__init__()
 
         assert config_text.startswith('spade')
@@ -74,8 +74,8 @@ class SPADE(nn.Module):
 
         if param_free_norm_type == 'instance':
             self.param_free_norm = nn.InstanceNorm2d(norm_nc, affine=False)
-        elif param_free_norm_type == 'syncbatch':
-            self.param_free_norm = SynchronizedBatchNorm2d(norm_nc, affine=False)
+        # elif param_free_norm_type == 'syncbatch':
+        #     self.param_free_norm = SynchronizedBatchNorm2d(norm_nc, affine=False)
         elif param_free_norm_type == 'batch':
             self.param_free_norm = nn.BatchNorm2d(norm_nc, affine=False)
         else:
@@ -87,7 +87,7 @@ class SPADE(nn.Module):
 
         pw = ks // 2
         self.mlp_shared = nn.Sequential(
-            nn.Conv2d(label_nc, nhidden, kernel_size=ks, padding=pw),
+            nn.Conv2d(semantic_nc, nhidden, kernel_size=ks, padding=pw),
             nn.ReLU()
         )
         self.mlp_gamma = nn.Conv2d(nhidden, norm_nc, kernel_size=ks, padding=pw)
