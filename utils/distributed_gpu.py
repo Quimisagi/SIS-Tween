@@ -31,13 +31,14 @@ def prepare(
     batch_size=32,
     pin_memory=False,
     num_workers=0,
+    shuffle=True,
 ):
     batch_sampler = DistributedClassBatchSampler(
         dataset=dataset,
         batch_size=batch_size,
         num_replicas=world_size,
         rank=rank,
-        shuffle=True,
+        shuffle=shuffle,
         drop_last=True,
     )
 

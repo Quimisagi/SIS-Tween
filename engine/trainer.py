@@ -4,16 +4,17 @@ from torch.utils.data import DistributedSampler
 
 from models import Interpolator, Segmentator 
 from utils import visualization
-from utils.psnr import psnr
 from .bundles import Batch
-from .training_steps import run_segmentator, run_interpolator, run_synth_gan
+from .training_steps import run_segmentator, run_interpolator
 from collections import deque
 from utils.dice_score import dice_score_multiclass
 from utils.relative_improvement import relative_improvement
 from utils.log_helper import log_step, log_validation
-from models.spade.pix2pix_model import Pix2PixModel
+from utils.storage import save_checkpoint, load_checkpoint
 
 import os
+import numpy as np
+from PIL import Image
 
 
 class Trainer:
@@ -41,10 +42,11 @@ class Trainer:
         if self.interp and opt.distributed_enabled and context.world_size > 1:
             self.interp = DistributedDataParallel(self.interp, device_ids=[context.local_rank])
 
+        self.is_training = self.dataloaders.train is not None
+
         self.optimizers = {}
         if self.seg:
             self.optimizers["seg"] = torch.optim.Adam(self.seg.parameters(), lr=opt.lr_seg)
-            print("Segmentation optimizer created.")
         if self.interp:
             self.optimizers["interp"] = torch.optim.Adam(self.interp.parameters(), lr=opt.lr_interp)
 
@@ -54,82 +56,35 @@ class Trainer:
         if self.interp:
             self.schedulers["interp"] = torch.optim.lr_scheduler.StepLR(self.optimizers["interp"], 10, 0.1)
 
-        if "synth" in opt.active_models:
-            self.synth = Pix2PixModel(opt)
-            if context.world_size > 1:
-                self.synth = DistributedDataParallel(self.synth, device_ids=[context.local_rank])
-                self.synth_on_one_gpu = self.synth.module
-            else:
-                self.synth.to(self.device)
-                self.synth_on_one_gpu = self.synth
-
-            if opt.isTrain:
-                self.optimizers["synth"], self.optimizers["disc"] = self.synth_on_one_gpu.create_optimizers(opt)
-                self.old_lr = opt.lr
-
-
-
-
-    def update_learning_rate(self):
-        """Updates learning rate for Synth based on SPADE logic."""
-        # You should call this in your epoch loop
-        if not self.synth: return
-        
-        if self.epoch > self.opt.niter:
-            lrd = self.opt.lr / self.opt.niter_decay
-            new_lr = self.old_lr - lrd
-        else:
-            new_lr = self.old_lr
-
-        if new_lr != self.old_lr:
-            # Handle TTUR (Two Time-Scale Update Rule) if enabled in opt
-            if getattr(self.opt, 'no_TTUR', True):
-                new_lr_G = new_lr
-                new_lr_D = new_lr
-            else:
-                new_lr_G = new_lr / 2
-                new_lr_D = new_lr * 2
-
-            for param_group in self.optimizers["disc"].param_groups:
-                param_group['lr'] = new_lr_D
-            for param_group in self.optimizers["synth"].param_groups:
-                param_group['lr'] = new_lr_G
+    def load_checkpoint(self, path: str):
+            """Load weights from a checkpoint file into models."""
+            self.context.logger.info(f"Loading checkpoint: {path}")
             
-            if self.context.logger:
-                self.context.logger.info(f'update learning rate: {self.old_lr} -> {new_lr}')
-            self.old_lr = new_lr
+            checkpoint = torch.load(path, map_location=self.device)
+            
+            if "model" in checkpoint:
+                model_states = checkpoint["model"]
+            else:
+                model_states = checkpoint
 
-    def save_checkpoint(self, path: str):
-        """Save the full training state to a checkpoint file."""
-        state = {
-            "epoch": self.epoch,
-            "global_step": self.global_step,
-            "train_stage": self.train_stage,
-            "model": {},
-            "optimizer": {},
-            "scheduler": {},
-            "opt": self.opt,  # Save config
-        }
+            def load_weights(network, state_dict):
+                try:
+                    if hasattr(network, 'module'):
+                        network.module.load_state_dict(state_dict)
+                    else:
+                        network.load_state_dict(state_dict)
+                except RuntimeError as e:
+                    self.context.logger.warning(f"Strict loading failed, trying strict=False. Error: {e}")
+                    network.load_state_dict(state_dict, strict=False)
 
-        # Save model states
-        if self.seg:
-            state["model"]["seg"] = self.seg.module.state_dict() if hasattr(self.seg, "module") else self.seg.state_dict()
-        if self.interp:
-            state["model"]["interp"] = self.interp.module.state_dict() if hasattr(self.interp, "module") else self.interp.state_dict()
-        if self.synth:
-            state["model"]["synth"] = self.synth.module.state_dict() if hasattr(self.synth, "module") else self.synth.state_dict()
+            if self.seg and "seg" in model_states:
+                load_weights(self.seg, model_states["seg"])
+                self.context.logger.info("Segmentation weights loaded.")
+                
+            if self.interp and "interp" in model_states:
+                load_weights(self.interp, model_states["interp"])
+                self.context.logger.info("Interpolation weights loaded.")
 
-        # Save optimizers
-        for k, opt in self.optimizers.items():
-            state["optimizer"][k] = opt.state_dict()
-
-        # Save schedulers
-        for k, sched in self.schedulers.items():
-            state["scheduler"][k] = sched.state_dict()
-
-        torch.save(state, path)
-        if self.context.logger:
-            self.context.logger.info(f"Checkpoint saved to {path}")
 
     def make_batch(self, data):
         """
@@ -164,18 +119,6 @@ class Trainer:
             self.interp, self.loss_fn, batch, self.device, optimizer, training=require_grad
         )
 
-    def forward_synth_gan(self, batch, optimizers, require_grad=True):
-        if not self.synth:
-            return None, 0.0, 0.0
-        return run_synth_gan(
-            self.synth_on_one_gpu,
-            optimizers,
-            batch,
-            context=self.context,
-            training=require_grad,
-        )
-
-
     def freeze(self, net):
         if not net:
             return
@@ -193,7 +136,6 @@ class Trainer:
     def stage1_warmup(self):
         self.unfreeze(self.seg)
         self.unfreeze(self.interp)
-        self.unfreeze(self.synth)
 
         for data in self.dataloaders.train:
             batch = self.make_batch(data)
@@ -203,10 +145,6 @@ class Trainer:
             )
             interp_out, loss_interp = self.forward_interp(
                 batch, optimizer=self.optimizers["interp"]
-            )
-            fake_synth_out, loss_G, loss_D = self.forward_synth_gan(
-                batch,
-                optimizers=self.optimizers,
             )
 
             log_step(
@@ -218,13 +156,10 @@ class Trainer:
                 losses={
                     "Segmentation": loss_seg,
                     "Interpolation": loss_interp,
-                    "Synthesis_G": loss_G,
-                    "Synthesis_D": loss_D,
                 },
             outputs = {
                 "seg": [seg.detach().cpu() for seg in seg_out] if seg_out is not None else None,
                 "interp": interp_out.detach().cpu() if interp_out is not None else None,
-                "synth": fake_synth_out.detach().cpu() if fake_synth_out is not None else None,
             },
             batch=batch)
             self.global_step += 1
@@ -232,7 +167,6 @@ class Trainer:
     def stage2_frozen_seg(self):
         self.freeze(self.seg)
         self.unfreeze(self.interp)
-        self.unfreeze(self.synth)
 
         for data in self.dataloaders.train:
             batch = self.make_batch(data)
@@ -248,12 +182,6 @@ class Trainer:
                 batch, optimizer=self.optimizers["interp"]
             )
 
-            # Train synthesis GAN
-            fake_synth_out, loss_G, loss_D = self.forward_synth_gan(
-                batch,
-                optimizers=self.optimizers,
-            )
-
             log_step(
                 context=self.context,
                 opt=self.opt,
@@ -263,208 +191,91 @@ class Trainer:
                 losses={
                     "Segmentation": loss_seg,
                     "Interpolation": loss_interp,
-                    "Synthesis_G": loss_G,
-                    "Synthesis_D": loss_D,
                 },
                 outputs={
                     "seg": [s.detach().cpu() for s in seg_out] if seg_out is not None else None,
                     "interp": interp_out.detach().cpu() if interp_out is not None else None,
-                    "synth": fake_synth_out.detach().cpu() if fake_synth_out is not None else None,
                 },
                 batch=batch,
             )
             self.global_step += 1
 
+    def validate(self, save_dir=None):
+        if self.seg: self.seg.eval()
+        if self.interp: self.interp.eval()
 
-    def stage3_frozen_seg_and_interp(self):
-        self.freeze(self.seg)
-        self.freeze(self.interp)
-        self.unfreeze(self.synth)
-
-        for data in self.dataloaders.train:
-            batch = self.make_batch(data)
-
-            # Teacher segmentation
-            with torch.no_grad():
-                seg_out, loss_seg = self.forward_seg(batch, require_grad=False)
-            self.replace_labels_with_segmentation(batch, seg_out)
-
-            # Teacher interpolation
-            with torch.no_grad():
-                interp_out, loss_interp = self.forward_interp(batch, require_grad=False)
-            self.replace_middle_with_interpolation(batch, interp_out)
-
-            # Train synthesis GAN only
-            fake_synth_out, loss_G, loss_D = self.forward_synth_gan(
-                batch,
-                optimizers=self.optimizers,
-            )
-
-            log_step(
-                context=self.context,
-                opt=self.opt,
-                global_step=self.global_step,
-                epoch=self.epoch,
-                stage="Stage3",
-                losses={
-                    "Segmentation": loss_seg,
-                    "Interpolation": loss_interp,
-                    "Synthesis_G": loss_G,
-                    "Synthesis_D": loss_D,
-                },
-                outputs={
-                    "seg": [s.detach().cpu() for s in seg_out] if seg_out is not None else None,
-                    "interp": interp_out.detach().cpu() if interp_out is not None else None,
-                    "synth": fake_synth_out.detach().cpu() if fake_synth_out is not None else None,
-                },
-                batch=batch,
-            )
-            self.global_step += 1
-
-    # def stage4_joint_finetune(self):
-    #     self.unfreeze(self.seg)
-    #     self.unfreeze(self.interp)
-    #     self.unfreeze(self.synth)
-
-    #     for data in self.dataloaders.train:
-    #         batch = self.make_batch(data)
-
-    #         out = joint_seg_interp_synth_step(
-    #             segmentator=self.seg,
-    #             interpolator=self.interp,
-    #             synthesizer_G=self.synth,
-    #             synthesizer_D=self.disc,
-    #             loss_fn=self.loss_fn,
-    #             batch=batch,
-    #             device=self.device,
-    #             num_classes=self.opt.semantic_nc,
-    #             optimizer_seg=self.optimizers["seg"],
-    #             optimizer_interp=self.optimizers["interp"],
-    #             optimizer_G=self.optimizers["synth"],
-    #             optimizer_D=self.optimizers["disc"],
-    #             training=True,
-    #         )
-
-    #         self.log_step(
-    #             stage="Stage4",
-    #             losses={
-    #                 "Total": out["loss"],
-    #             },
-    #             outputs={
-    #                 "synth": out["fake_mid"],
-    #             },
-    #             batch=batch,
-    #         )
-
-    #         self.global_step += 1
-
-
-    def validate(self):
         n_batches = len(self.dataloaders.val)
-
-        totals = {
-            "loss": {
-                "seg": 0.0,
-                "interp": 0.0,
-                "synth_G": 0.0,
-                "synth_D": 0.0,
-            },
-            "dice": {
-                "seg": 0.0,
-                "interp": 0.0,
-            },
-            "psnr": {
-                "synth": 0.0,
-            },
-        }
+        totals = {"loss": {"seg": 0.0, "interp": 0.0}, "dice": {"seg": 0.0, "interp": 0.0}}
 
         with torch.no_grad():
-            for data in self.dataloaders.val:
+            for batch_idx, data in enumerate(self.dataloaders.val):
                 batch = self.make_batch(data)
-
                 seg_out, loss_seg = self.forward_seg(batch, require_grad=False)
                 interp_out, loss_interp = self.forward_interp(batch, require_grad=False)
-                fake_synth_out, loss_G, loss_D = self.forward_synth_gan(batch, self.optimizers, require_grad=False)
 
-                outputs = {
-                    "seg": seg_out,
-                    "interp": interp_out,
-                    "synth": fake_synth_out,
-                }
-
-                # ---- accumulate losses ----
                 totals["loss"]["seg"] += float(loss_seg)
                 totals["loss"]["interp"] += float(loss_interp)
-                totals["loss"]["synth_G"] += float(loss_G)
-                totals["loss"]["synth_D"] += float(loss_D)
 
-                # ---- accumulate metrics ----
                 if seg_out is not None:
                     for i in range(len(seg_out)):
-                        pred = seg_out[i].detach()
-                        target = batch.labels[i].squeeze(1).long()
-                        totals["dice"]["seg"] += dice_score_multiclass(pred, target)
+                        totals["dice"]["seg"] += dice_score_multiclass(seg_out[i].detach(), batch.labels[i].squeeze(1).long())
 
                 if interp_out is not None:
-                    totals["dice"]["interp"] += dice_score_multiclass(
-                        interp_out,
-                        batch.labels[1].squeeze(1).long(),
-                    )
-                if fake_synth_out is not None:
-                    psnr_value = psnr(
-                        fake_synth_out,
-                        batch.images[1].to(self.device),
-                        max_val=1.0,
-                    )
-                    totals["psnr"]["synth"] += psnr_value.item()
+                    totals["dice"]["interp"] += dice_score_multiclass(interp_out, batch.labels[1].squeeze(1).long())
 
-                # ---- visualization ----
-                if self.context.writer:
+                if save_dir is not None and interp_out is not None:
+                    gt_dir = os.path.join(save_dir, "gt")
+                    os.makedirs(save_dir, exist_ok=True)
+                    os.makedirs(gt_dir, exist_ok=True)
+
+                    preds = interp_out.detach().argmax(dim=1).cpu().numpy().astype(np.uint8)
+                    
+                    gt_imgs = batch.images[1]
+
+                    for i in range(len(preds)):
+                        file_name_base = f"batch{batch_idx:04d}_sample{i:02d}.png"
+                        
+                        Image.fromarray(preds[i]).save(os.path.join(save_dir, "pred_" + file_name_base))
+                        
+                        gt_img_tensor = gt_imgs[i].detach().cpu()
+                        gt_img_tensor = torch.clamp((gt_img_tensor + 1.0) / 2.0, 0, 1)
+                        gt_img_np = gt_img_tensor.permute(1, 2, 0).numpy()
+                        
+                        if gt_img_np.dtype == np.float32 or gt_img_np.dtype == np.float64:
+                            gt_img_np = (np.clip(gt_img_np, 0, 1) * 255).astype(np.uint8)
+                        
+                        if gt_img_np.ndim == 3 and gt_img_np.shape[2] == 1:
+                            gt_img_np = gt_img_np.squeeze(2)
+
+                        Image.fromarray(gt_img_np).save(os.path.join(gt_dir, "pred_" + file_name_base))
+
+                if self.context.writer and self.global_step % 10 == 0: 
                     visualization.samples_comparison(
-                        self.context,
-                        batch.images,
-                        batch.labels,
-                        outputs,
-                        self.global_step,
-                        tag="val_samples",
+                        self.context, batch.images, batch.labels, 
+                        {"seg": seg_out, "interp": interp_out}, 
+                        self.global_step, tag="val_samples"
                     )
 
-        # ---- averages ----
         metrics = {
-            "loss": {
-                "seg": totals["loss"]["seg"] / n_batches,
-                "interp": totals["loss"]["interp"] / n_batches,
-                "synth_G": totals["loss"]["synth_G"] / n_batches,
-                "synth_D": totals["loss"]["synth_D"] / n_batches,
-            },
+            "loss": {k: v / n_batches if n_batches > 0 else 0 for k, v in totals["loss"].items()},
             "dice": {
-                "seg": (
-                    totals["dice"]["seg"] / (n_batches * 3)
-                    if self.seg else 0.0
-                ),
-                "interp": (
-                    totals["dice"]["interp"] / n_batches
-                    if self.interp else 0.0
-                ),
-            },
-            "psnr": {
-                "synth": (
-                    totals["psnr"]["synth"] / n_batches
-                    if self.synth else 0.0
-                ),
+                "seg": (totals["dice"]["seg"] / (n_batches * 3) if self.seg and n_batches > 0 else 0.0),
+                "interp": (totals["dice"]["interp"] / n_batches if self.interp and n_batches > 0 else 0.0),
             },
         }
 
-        # ---- logging ----
         log_validation(self.context, self.global_step, metrics)
+        
+        if self.is_training:
+            if self.seg: self.seg.train()
+            if self.interp: self.interp.train()
 
         return metrics
+
 
     def train(self):
         seg_val_history = deque(maxlen=5)
         interp_val_history = deque(maxlen=5)
-        synth_val_history = deque(maxlen=5)
-        final_val_history = deque(maxlen=10)
 
         for self.epoch in range(self.opt.epochs):
             if isinstance(self.dataloaders.train.sampler, DistributedSampler):
@@ -473,63 +284,66 @@ class Trainer:
             for s in self.schedulers.values():
                 s.step()
 
-            self.update_learning_rate()
-
             # -------- TRAIN --------
             if self.train_stage == 0:
                 self.stage1_warmup()
             elif self.train_stage == 1:
                 self.stage2_frozen_seg()
-            elif self.train_stage == 2:
-                self.stage3_frozen_seg_and_interp()
-            # elif self.train_stage == 3:
-            #     self.stage4_joint_finetune()
 
             # -------- VALIDATE --------
             val_metrics = self.validate()
 
             # -------- STAGE TRANSITIONS --------
 
-            # if self.train_stage == 0:
-            #     seg_val_history.append(val_metrics["dice"]["seg"])
-            #     if len(seg_val_history) == seg_val_history.maxlen:
-            #         ri = relative_improvement(seg_val_history)
-            #         if ri < 0.005:
-            #             self.context.logger.info(f"Segmentation converged with RI={ri:.4f}. Moving to Stage 2.")
-            #             self.train_stage = 1
-            #             interp_val_history.clear()
-            #             continue
-
-            # if self.train_stage == 1:
-            #     interp_val_history.append(val_metrics["dice"]["interp"])
-            #     if len(interp_val_history) == interp_val_history.maxlen:
-            #         ri = relative_improvement(interp_val_history)
-            #         if ri < 0.005:
-            #             self.context.logger.info(f"Interpolation converged with RI={ri:.4f}. Moving to Stage 3.")
-            #             self.train_stage = 2
-            #             synth_val_history.clear()
-            #             continue
-
-            # if self.train_stage == 2:
-            #     synth_val_history.append(val_metrics["psnr"]["synth"])
-            #     if len(synth_val_history) == synth_val_history.maxlen:
-            #         ri = relative_improvement(synth_val_history)
-            #         if ri < 0.005:
-            #             self.context.logger.info(f"Synthesis converged with RI={ri:.4f}. Moving to Stage 4.")
-            #             self.train_stage = 3
-            #             continue
-            # if self.train_stage == 3:
-            #     final_val_history.append(val_metrics["psnr"]["synth"])
-            #     if len(final_val_history) == final_val_history.maxlen:
-            #         ri = relative_improvement(final_val_history)
-            #         if ri < 0.005:
-            #             self.context.logger.info(
-            #                     f"Training converged. Stopping training with RI={ri:.4f}."
-            #             )
-            #             break
+            if self.train_stage == 0:
+                seg_val_history.append(val_metrics["dice"]["seg"])
+                if len(seg_val_history) == seg_val_history.maxlen:
+                    ri = relative_improvement(seg_val_history)
+                    if ri < 0.002:
+                        self.context.logger.info(f"Segmentation converged with RI={ri:.4f}. Moving to Stage 2.")
+                        self.train_stage = 1
+                        interp_val_history.clear()
+                        continue
 
             # -------- SAVE CHECKPOINT --------
             if (self.epoch + 1) % 5 == 0:
                 os.makedirs(self.opt.checkpoints_dir, exist_ok=True)
                 checkpoint_path = f"{self.opt.checkpoints_dir}/checkpoint_epoch_{self.epoch+1}.pth"
-                self.save_checkpoint(checkpoint_path)
+                save_checkpoint(path=checkpoint_path,
+                                context=self.context,
+                                epoch=self.epoch,
+                                global_step=self.global_step,
+                                train_stage = self.train_stage,
+                                opt=self.opt,
+                                seg=self.seg,
+                                interp=self.interp,
+                                optimizers=self.optimizers,
+                                schedulers=self.schedulers)
+
+    def test(self):
+            self.context.logger.info("Starting Test Evaluation...")
+            ckpt_path = "./checkpoints/checkpoint_epoch_30.pth"
+
+            load_checkpoint(
+                path=ckpt_path,
+                context=self.context,
+                device=self.device,
+                seg=self.seg,
+                interp=self.interp,
+            )
+
+            if not self.seg and not self.interp:
+                self.context.logger.warning("No models (Seg or Interp) active!")
+                return {}
+
+            save_dir = os.path.join(self.opt.checkpoints_dir, self.opt.name, "test_predictions")
+            os.makedirs(save_dir, exist_ok=True)
+            self.context.logger.info(f"Saving interpolation predictions to: {save_dir}")
+
+            metrics = self.validate(save_dir=save_dir)
+            
+            self.context.logger.info("================ Test Results ================")
+            self.context.logger.info(f"Segmentation Dice: {metrics['dice']['seg']:.4f}")
+            self.context.logger.info(f"Interpolation Dice: {metrics['dice']['interp']:.4f}")
+            self.context.logger.info("==============================================")
+            return metrics

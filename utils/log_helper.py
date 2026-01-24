@@ -9,7 +9,7 @@ def safe_detach(x):
 
 
 def log_step(context, opt, global_step, epoch, stage, losses, batch=None, outputs=None):
-    if not context.writer or global_step % 10 != 0:
+    if not context.writer or global_step % opt.freq_print != 0:
         return
     loss_str = " ".join(f"{k}={v:.4f}" for k, v in losses.items())
     context.logger.info(
@@ -29,20 +29,6 @@ def log_step(context, opt, global_step, epoch, stage, losses, batch=None, output
             global_step,
             "loss/interpolation",
         )
-    if "Synthesis_G" in losses:
-        visualization.plot(
-            context,
-            {"train": losses["Synthesis_G"]},
-            global_step,
-            "loss/synthesis_G",
-        )
-    if "Synthesis_D" in losses:
-        visualization.plot(
-            context,
-            {"train": losses["Synthesis_D"]},
-            global_step,
-            "loss/synthesis_D",
-        )
 
     outputs = {
             k: safe_detach(v) for k, v in (outputs or {}).items()
@@ -61,15 +47,12 @@ def log_step(context, opt, global_step, epoch, stage, losses, batch=None, output
 def log_validation(context, global_step, metrics: dict):
     loss = metrics["loss"]
     dice = metrics["dice"]
-    psnr = metrics["psnr"]
 
     if context.logger:
         context.logger.info(
             "[Validation] "
             f"Seg_Loss={loss['seg']:.4f}, "
             f"Interp_Loss={loss['interp']:.4f}, "
-            f"Synth_G_Loss={loss['synth_G']:.4f}, "
-            f"Synth_D_Loss={loss['synth_D']:.4f}, "
             f"Dice_Seg={dice['seg']:.4f}, "
             f"Dice_Interp={dice['interp']:.4f}"
         )
@@ -91,29 +74,9 @@ def log_validation(context, global_step, metrics: dict):
 
         visualization.plot(
             context,
-            {"validation": loss["synth_G"]},
-            global_step,
-            tag="loss/synthesis_G",
-        )
-
-        visualization.plot(
-            context,
-            {"validation": loss["synth_D"]},
-            global_step,
-            tag="loss/synthesis_D",
-        )
-
-        visualization.plot(
-            context,
             {"validation": loss["interp"]},
             global_step,
             tag="loss/interpolation",
         )
 
-        visualization.plot(
-            context,
-            {"synth_psnr": psnr["synth"]},
-            global_step,
-            tag="psnr",
-        )
 
