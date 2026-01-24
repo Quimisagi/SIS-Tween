@@ -10,8 +10,11 @@ from collections import deque
 from utils.dice_score import dice_score_multiclass
 from utils.relative_improvement import relative_improvement
 from utils.log_helper import log_step, log_validation
+from utils.storage import save_checkpoint, load_checkpoint
 
 import os
+import numpy as np
+from PIL import Image
 
 
 class Trainer:
@@ -39,10 +42,11 @@ class Trainer:
         if self.interp and opt.distributed_enabled and context.world_size > 1:
             self.interp = DistributedDataParallel(self.interp, device_ids=[context.local_rank])
 
+        self.is_training = self.dataloaders.train is not None
+
         self.optimizers = {}
         if self.seg:
             self.optimizers["seg"] = torch.optim.Adam(self.seg.parameters(), lr=opt.lr_seg)
-            print("Segmentation optimizer created.")
         if self.interp:
             self.optimizers["interp"] = torch.optim.Adam(self.interp.parameters(), lr=opt.lr_interp)
 
@@ -52,37 +56,35 @@ class Trainer:
         if self.interp:
             self.schedulers["interp"] = torch.optim.lr_scheduler.StepLR(self.optimizers["interp"], 10, 0.1)
 
+    def load_checkpoint(self, path: str):
+            """Load weights from a checkpoint file into models."""
+            self.context.logger.info(f"Loading checkpoint: {path}")
+            
+            checkpoint = torch.load(path, map_location=self.device)
+            
+            if "model" in checkpoint:
+                model_states = checkpoint["model"]
+            else:
+                model_states = checkpoint
 
+            def load_weights(network, state_dict):
+                try:
+                    if hasattr(network, 'module'):
+                        network.module.load_state_dict(state_dict)
+                    else:
+                        network.load_state_dict(state_dict)
+                except RuntimeError as e:
+                    self.context.logger.warning(f"Strict loading failed, trying strict=False. Error: {e}")
+                    network.load_state_dict(state_dict, strict=False)
 
-    def save_checkpoint(self, path: str):
-        """Save the full training state to a checkpoint file."""
-        state = {
-            "epoch": self.epoch,
-            "global_step": self.global_step,
-            "train_stage": self.train_stage,
-            "model": {},
-            "optimizer": {},
-            "scheduler": {},
-            "opt": self.opt,  # Save config
-        }
+            if self.seg and "seg" in model_states:
+                load_weights(self.seg, model_states["seg"])
+                self.context.logger.info("Segmentation weights loaded.")
+                
+            if self.interp and "interp" in model_states:
+                load_weights(self.interp, model_states["interp"])
+                self.context.logger.info("Interpolation weights loaded.")
 
-        # Save model states
-        if self.seg:
-            state["model"]["seg"] = self.seg.module.state_dict() if hasattr(self.seg, "module") else self.seg.state_dict()
-        if self.interp:
-            state["model"]["interp"] = self.interp.module.state_dict() if hasattr(self.interp, "module") else self.interp.state_dict()
-
-        # Save optimizers
-        for k, opt in self.optimizers.items():
-            state["optimizer"][k] = opt.state_dict()
-
-        # Save schedulers
-        for k, sched in self.schedulers.items():
-            state["scheduler"][k] = sched.state_dict()
-
-        torch.save(state, path)
-        if self.context.logger:
-            self.context.logger.info(f"Checkpoint saved to {path}")
 
     def make_batch(self, data):
         """
@@ -198,85 +200,78 @@ class Trainer:
             )
             self.global_step += 1
 
+    def validate(self, save_dir=None):
+        if self.seg: self.seg.eval()
+        if self.interp: self.interp.eval()
 
-
-
-    def validate(self):
         n_batches = len(self.dataloaders.val)
-
-        totals = {
-            "loss": {
-                "seg": 0.0,
-                "interp": 0.0,
-            },
-            "dice": {
-                "seg": 0.0,
-                "interp": 0.0,
-            },
-        }
+        totals = {"loss": {"seg": 0.0, "interp": 0.0}, "dice": {"seg": 0.0, "interp": 0.0}}
 
         with torch.no_grad():
-            for data in self.dataloaders.val:
+            for batch_idx, data in enumerate(self.dataloaders.val):
                 batch = self.make_batch(data)
-
                 seg_out, loss_seg = self.forward_seg(batch, require_grad=False)
                 interp_out, loss_interp = self.forward_interp(batch, require_grad=False)
 
-                outputs = {
-                    "seg": seg_out,
-                    "interp": interp_out,
-                }
-
-                # ---- accumulate losses ----
                 totals["loss"]["seg"] += float(loss_seg)
                 totals["loss"]["interp"] += float(loss_interp)
 
-                # ---- accumulate metrics ----
                 if seg_out is not None:
                     for i in range(len(seg_out)):
-                        pred = seg_out[i].detach()
-                        target = batch.labels[i].squeeze(1).long()
-                        totals["dice"]["seg"] += dice_score_multiclass(pred, target)
+                        totals["dice"]["seg"] += dice_score_multiclass(seg_out[i].detach(), batch.labels[i].squeeze(1).long())
 
                 if interp_out is not None:
-                    totals["dice"]["interp"] += dice_score_multiclass(
-                        interp_out,
-                        batch.labels[1].squeeze(1).long(),
-                    )
+                    totals["dice"]["interp"] += dice_score_multiclass(interp_out, batch.labels[1].squeeze(1).long())
 
-                # ---- visualization ----
-                if self.context.writer:
+                if save_dir is not None and interp_out is not None:
+                    gt_dir = os.path.join(save_dir, "gt")
+                    os.makedirs(save_dir, exist_ok=True)
+                    os.makedirs(gt_dir, exist_ok=True)
+
+                    preds = interp_out.detach().argmax(dim=1).cpu().numpy().astype(np.uint8)
+                    
+                    gt_imgs = batch.images[1]
+
+                    for i in range(len(preds)):
+                        file_name_base = f"batch{batch_idx:04d}_sample{i:02d}.png"
+                        
+                        Image.fromarray(preds[i]).save(os.path.join(save_dir, "pred_" + file_name_base))
+                        
+                        gt_img_tensor = gt_imgs[i].detach().cpu()
+                        gt_img_tensor = torch.clamp((gt_img_tensor + 1.0) / 2.0, 0, 1)
+                        gt_img_np = gt_img_tensor.permute(1, 2, 0).numpy()
+                        
+                        if gt_img_np.dtype == np.float32 or gt_img_np.dtype == np.float64:
+                            gt_img_np = (np.clip(gt_img_np, 0, 1) * 255).astype(np.uint8)
+                        
+                        if gt_img_np.ndim == 3 and gt_img_np.shape[2] == 1:
+                            gt_img_np = gt_img_np.squeeze(2)
+
+                        Image.fromarray(gt_img_np).save(os.path.join(gt_dir, "pred_" + file_name_base))
+
+                if self.context.writer and self.global_step % 10 == 0: 
                     visualization.samples_comparison(
-                        self.context,
-                        batch.images,
-                        batch.labels,
-                        outputs,
-                        self.global_step,
-                        tag="val_samples",
+                        self.context, batch.images, batch.labels, 
+                        {"seg": seg_out, "interp": interp_out}, 
+                        self.global_step, tag="val_samples"
                     )
 
-        # ---- averages ----
         metrics = {
-            "loss": {
-                "seg": totals["loss"]["seg"] / n_batches,
-                "interp": totals["loss"]["interp"] / n_batches,
-            },
+            "loss": {k: v / n_batches if n_batches > 0 else 0 for k, v in totals["loss"].items()},
             "dice": {
-                "seg": (
-                    totals["dice"]["seg"] / (n_batches * 3)
-                    if self.seg else 0.0
-                ),
-                "interp": (
-                    totals["dice"]["interp"] / n_batches
-                    if self.interp else 0.0
-                ),
+                "seg": (totals["dice"]["seg"] / (n_batches * 3) if self.seg and n_batches > 0 else 0.0),
+                "interp": (totals["dice"]["interp"] / n_batches if self.interp and n_batches > 0 else 0.0),
             },
         }
 
-        # ---- logging ----
         log_validation(self.context, self.global_step, metrics)
+        
+        if self.is_training:
+            if self.seg: self.seg.train()
+            if self.interp: self.interp.train()
 
         return metrics
+
 
     def train(self):
         seg_val_history = deque(maxlen=5)
@@ -314,4 +309,41 @@ class Trainer:
             if (self.epoch + 1) % 5 == 0:
                 os.makedirs(self.opt.checkpoints_dir, exist_ok=True)
                 checkpoint_path = f"{self.opt.checkpoints_dir}/checkpoint_epoch_{self.epoch+1}.pth"
-                self.save_checkpoint(checkpoint_path)
+                save_checkpoint(path=checkpoint_path,
+                                context=self.context,
+                                epoch=self.epoch,
+                                global_step=self.global_step,
+                                train_stage = self.train_stage,
+                                opt=self.opt,
+                                seg=self.seg,
+                                interp=self.interp,
+                                optimizers=self.optimizers,
+                                schedulers=self.schedulers)
+
+    def test(self):
+            self.context.logger.info("Starting Test Evaluation...")
+            ckpt_path = "./checkpoints/checkpoint_epoch_30.pth"
+
+            load_checkpoint(
+                path=ckpt_path,
+                context=self.context,
+                device=self.device,
+                seg=self.seg,
+                interp=self.interp,
+            )
+
+            if not self.seg and not self.interp:
+                self.context.logger.warning("No models (Seg or Interp) active!")
+                return {}
+
+            save_dir = os.path.join(self.opt.checkpoints_dir, self.opt.name, "test_predictions")
+            os.makedirs(save_dir, exist_ok=True)
+            self.context.logger.info(f"Saving interpolation predictions to: {save_dir}")
+
+            metrics = self.validate(save_dir=save_dir)
+            
+            self.context.logger.info("================ Test Results ================")
+            self.context.logger.info(f"Segmentation Dice: {metrics['dice']['seg']:.4f}")
+            self.context.logger.info(f"Interpolation Dice: {metrics['dice']['interp']:.4f}")
+            self.context.logger.info("==============================================")
+            return metrics
